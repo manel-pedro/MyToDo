@@ -7,36 +7,33 @@ and the next three days in one window.
 
 - Seven always-current day cards with a highlighted Today card
 - Add and complete tasks inline
-- Drag tasks from one day to another
-- Delete tasks from their context menu
-- Local persistence with SwiftData
+- Delete tasks with the trash button
+- Local JSON persistence in Application Support
 - A repository boundary and sync metadata ready for a future remote backend
 - Native light and dark mode support
 
 ## Requirements
 
 - macOS 14 or later
-- Xcode with a matching macOS SDK and Swift toolchain
+- Apple Command Line Tools with a matching macOS SDK and Swift toolchain
 
-This Mac currently has standalone Command Line Tools whose compiler and SDK
-versions do not match. Installing or updating Xcode resolves that local tooling
-issue.
+No full Xcode installation is required.
 
 ## Run
 
-Open `Package.swift` in Xcode, select the `SevenDayTodo` executable, and press
-Run. Once the local command-line toolchain is repaired, the app can also be run
-from this directory with:
+Build a signed personal-use `.app` bundle with:
 
 ```sh
-swift run SevenDayTodo
+./scripts/build-app.sh
 ```
+
+The finished application is written to `dist/Seven Day Todo.app`.
 
 ## Architecture
 
-`ContentView` and `TaskStore` own the UI state. They communicate through the
+`BoardViewController` and `TaskStore` own the UI state. They communicate through the
 `TaskRepository` protocol rather than depending directly on a remote service.
-`SwiftDataTaskRepository` is the current local implementation.
+`JSONTaskRepository` is the current local implementation.
 
 Tasks already carry stable UUIDs, update timestamps, soft-deletion markers, and
 a sync state. A future CloudKit or Supabase adapter can synchronize these local

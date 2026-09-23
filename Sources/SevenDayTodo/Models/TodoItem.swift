@@ -1,9 +1,7 @@
 import Foundation
-import SwiftData
 
-@Model
-final class TodoItem {
-    @Attribute(.unique) var id: UUID
+struct TodoItem: Codable, Identifiable, Sendable {
+    var id: UUID
     var title: String
     /// A calendar day (`yyyy-MM-dd`), deliberately independent of time zones.
     var dayKey: String
@@ -27,4 +25,3 @@ final class TodoItem {
         self.syncState = "pending"
     }
 }
-

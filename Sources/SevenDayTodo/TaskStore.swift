@@ -1,13 +1,12 @@
 import Foundation
-import Observation
 
 @MainActor
-@Observable
 final class TaskStore {
     private let repository: any TaskRepository
     private(set) var items: [TodoItem] = []
     private(set) var days: [Date] = []
     var errorMessage: String?
+    var onChange: (() -> Void)?
 
     init(repository: any TaskRepository) {
         self.repository = repository
@@ -30,18 +29,19 @@ final class TaskStore {
         perform { try repository.add(title: title, dayKey: DayKey.value(for: date)) }
     }
 
-    func toggle(_ item: TodoItem) { perform { try repository.toggle(item) } }
-    func delete(_ item: TodoItem) { perform { try repository.delete(item) } }
+    func toggle(_ item: TodoItem) { perform { try repository.toggle(id: item.id) } }
+    func delete(_ item: TodoItem) { perform { try repository.delete(id: item.id) } }
 
     func move(itemID: UUID, to date: Date) {
         guard let item = items.first(where: { $0.id == itemID }) else { return }
-        perform { try repository.move(item, to: DayKey.value(for: date)) }
+        perform { try repository.move(id: item.id, to: DayKey.value(for: date)) }
     }
 
     func reload() {
         do {
             items = try repository.tasks(dayKeys: days.map { DayKey.value(for: $0) })
             errorMessage = nil
+            onChange?()
         } catch {
             errorMessage = error.localizedDescription
         }
