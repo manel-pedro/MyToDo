@@ -1,9 +1,21 @@
 import AppKit
+import Darwin
 
 @main
 @MainActor
 struct SevenDayTodoApp {
     static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            do {
+                try SelfTest.run()
+                print("Self-test passed")
+                exit(EXIT_SUCCESS)
+            } catch {
+                fputs("Self-test failed: \(error)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+        }
+
         let application = NSApplication.shared
         let delegate = AppDelegate()
         application.delegate = delegate

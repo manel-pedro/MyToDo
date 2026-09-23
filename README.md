@@ -1,4 +1,4 @@
-# Seven Day Todo
+# Vibe Coded Seven Day Todo
 
 A small, local-first macOS to-do app that shows the three previous days, today,
 and the next three days in one window.
@@ -28,6 +28,12 @@ Build a signed personal-use `.app` bundle with:
 ```
 
 The finished application is written to `dist/Seven Day Todo.app`.
+
+Run the local persistence checks after a debug build with:
+
+```sh
+.build/out/Products/Debug/SevenDayTodo --self-test
+```
 
 ## Architecture
 
