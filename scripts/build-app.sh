@@ -19,6 +19,7 @@ swift build \
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$BUILD_ROOT/out/Products/Release/SevenDayTodo" "$APP_PATH/Contents/MacOS/SevenDayTodo"
 cp "$TASK_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
+cp "$TASK_ROOT/Resources/AppIcon.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
 codesign --force --sign - "$APP_PATH"
 
 echo "$APP_PATH"
