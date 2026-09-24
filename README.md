@@ -7,6 +7,7 @@ and the next three days in one window.
 
 - Seven day cards centered on today, with one-day navigation and a Today reset
 - Floating editor for task titles, long notes, dates, and completion
+- Live Markdown formatting in Notes; syntax is shown on the line being edited, while raw Markdown remains saved
 - Drag tasks between visible days or within a day to reorder them
 - Soft-delete tasks with the trash button
 - Local JSON persistence in Application Support
@@ -40,6 +41,9 @@ Run the local persistence checks after building the app with:
 
 `BoardViewController` and `TaskEditorPanel` render AppKit controls and call `TaskStore`.
 The store owns the visible date range, editor draft, selected task, and errors.
+`MarkdownCompiler` parses note lines, and `MarkdownLivePreview` applies formatting
+without replacing the underlying text. Headings, emphasis, links, quotes, lists,
+inline code, and fenced code blocks are supported.
 It depends on the `TaskRepository` interface.
 `LocalTaskRepository` implements it; `JSONFileTaskStorage` handles JSON encoding, migration,
 and atomic file writes through `TaskPersistence`. The repository only updates its

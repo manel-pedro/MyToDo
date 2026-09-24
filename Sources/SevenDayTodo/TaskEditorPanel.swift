@@ -6,6 +6,7 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
   private let onClose: () -> Void
   private let titleField = NSTextField()
   private let notesView = NSTextView()
+  private var markdownPreview: MarkdownLivePreview?
   private let datePicker = NSDatePicker()
   private let completed = NSButton(checkboxWithTitle: "Completed", target: nil, action: nil)
 
@@ -48,11 +49,11 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
     dateRow.spacing = 12
 
     let notesScroll = textScroll(for: notesView)
+    markdownPreview = MarkdownLivePreview(textView: notesView)
     let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelAction))
     let save = NSButton(
       title: store.selectedTask == nil ? "Create" : "Save", target: self,
       action: #selector(saveAction))
-    save.keyEquivalent = "\r"
     let spacer = NSView()
     spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
     let actions = NSStackView(views: [spacer, cancel, save])
@@ -93,13 +94,27 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
     scroll.hasVerticalScroller = true
     scroll.borderType = .bezelBorder
     scroll.drawsBackground = true
+    textView.frame = NSRect(x: 0, y: 0, width: 400, height: 270)
+    textView.minSize = NSSize(width: 0, height: 270)
+    textView.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude,
+      height: CGFloat.greatestFiniteMagnitude)
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
     textView.isEditable = true
     textView.isSelectable = true
-    textView.isRichText = false
+    textView.isRichText = true
+    textView.importsGraphics = false
+    textView.allowsUndo = true
+    textView.isAutomaticQuoteSubstitutionEnabled = false
+    textView.isAutomaticDashSubstitutionEnabled = false
     textView.font = .systemFont(ofSize: 12)
     textView.textContainerInset = NSSize(width: 5, height: 5)
     textView.autoresizingMask = [.width]
     textView.textContainer?.widthTracksTextView = true
+    textView.textContainer?.containerSize = NSSize(
+      width: 400,
+      height: CGFloat.greatestFiniteMagnitude)
     scroll.documentView = textView
     return scroll
   }
@@ -108,6 +123,7 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
     guard let draft = store.draft else { return }
     titleField.stringValue = draft.title
     notesView.string = draft.notes
+    markdownPreview?.render()
     datePicker.dateValue = draft.date
     completed.state = draft.isCompleted ? .on : .off
     makeFirstResponder(titleField)
