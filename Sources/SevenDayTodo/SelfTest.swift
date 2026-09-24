@@ -128,6 +128,70 @@ enum SelfTest {
     try require(
       !escaped.spans.contains { $0.style == .italic },
       "escaped punctuation should stay literal")
+    for level in 1...6 {
+      let heading = MarkdownCompiler.compile(String(repeating: "#", count: level) + " Heading")
+      try require(heading.block == .heading(level), "all six heading levels should compile")
+    }
+    try require(MarkdownCompiler.compile("> Quote").block == .quote, "blockquote should compile")
+    for marker in ["-", "*", "+"] {
+      try require(
+        MarkdownCompiler.compile("\(marker) Item").block == .unorderedList,
+        "all unordered list markers should compile")
+    }
+    for rule in ["---", "***", "___", "- - -"] {
+      try require(
+        MarkdownCompiler.compile(rule).block == .horizontalRule,
+        "horizontal rule should not become a list")
+    }
+    let image = MarkdownCompiler.compile("![kitten](https://example.com/cat.png)")
+    try require(image.spans.count == 1 && image.spans[0].style == .image,
+      "image syntax should not be treated as a link")
+    let combined = MarkdownCompiler.compile("***important***")
+    try require(combined.spans.contains { $0.style == .boldItalic },
+      "combined emphasis should compile")
+
+    let sample = """
+      # Heading
+
+      **bold** and *italic* and `code`
+      > Quote
+      1. First
+      2. Second
+      - One
+      - Two
+      ---
+      [site](https://example.com)
+      ![cat](https://example.com/cat.png)
+      """
+    let html = MarkdownHTMLRenderer.render(sample)
+    for fragment in [
+      "<h1>Heading</h1>", "<strong>bold</strong>", "<em>italic</em>",
+      "<code>code</code>", "<blockquote>Quote</blockquote>",
+      "<ol start=\"1\"><li>First</li><li>Second</li></ol>",
+      "<ul><li>One</li><li>Two</li></ul>", "<hr>",
+      "<a href=\"https://example.com\">site</a>",
+      "<img src=\"https://example.com/cat.png\" alt=\"cat\">",
+    ] {
+      try require(html.contains(fragment), "rendered preview missing \(fragment)")
+    }
+    try require(
+      MarkdownHTMLRenderer.render("[bad](javascript:evil)").contains("bad</p>"),
+      "unsafe link protocols should not become actionable")
+    try require(
+      MarkdownHTMLRenderer.render("<script>alert(1)</script>").contains("&lt;script&gt;"),
+      "raw HTML should be escaped")
+    try require(
+      MarkdownHTMLRenderer.render("First line  \nSecond line").contains("First line<br>Second line"),
+      "two trailing spaces should create a line break")
+    try require(
+      MarkdownHTMLRenderer.render("Alternate heading\n---").contains("<h2>Alternate heading</h2>"),
+      "setext heading should render")
+    try require(
+      MarkdownHTMLRenderer.render("```\n**literal**\n```").contains("<pre><code>**literal**"),
+      "fenced code should remain literal in the rendered preview")
+    try require(
+      MarkdownHTMLRenderer.render("![local](image.jpg)").contains("<img src=\"image.jpg\""),
+      "relative image paths should render from the Notes directory")
 
     let source = "# Heading\n**strong**\nplain"
     let styled = NSMutableAttributedString(string: source)

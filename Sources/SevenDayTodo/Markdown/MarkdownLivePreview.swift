@@ -3,6 +3,7 @@ import AppKit
 /// Keeps the text view's characters as Markdown source and changes only presentation attributes.
 @MainActor
 final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
+  var onChange: (() -> Void)?
   private weak var textView: NSTextView?
   private var editingNotes = false
   private var isRendering = false
@@ -25,6 +26,7 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
 
   func textDidChange(_ notification: Notification) {
     render(activeSelection: editingNotes ? textView?.selectedRange() : nil)
+    onChange?()
   }
 
   func textViewDidChangeSelection(_ notification: Notification) {
@@ -135,6 +137,12 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
         default: break
         }
         storage.addAttribute(.paragraphStyle, value: paragraph, range: lineRange)
+      case .horizontalRule:
+        storage.addAttributes(
+          [
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+          ], range: lineRange)
       }
     }
 
@@ -145,6 +153,9 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
       case .bold:
         applyTrait(.boldFontMask, to: range, in: storage)
       case .italic:
+        applyTrait(.italicFontMask, to: range, in: storage)
+      case .boldItalic:
+        applyTrait(.boldFontMask, to: range, in: storage)
         applyTrait(.italicFontMask, to: range, in: storage)
       case .code:
         storage.addAttributes(
@@ -160,6 +171,18 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
         storage.addAttributes(
           [
             .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+          ], range: range)
+        if let destination = span.destination,
+          let url = URL(string: destination),
+          ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "")
+        {
+          storage.addAttribute(.link, value: url, range: range)
+        }
+      case .image:
+        storage.addAttributes(
+          [
+            .foregroundColor: NSColor.secondaryLabelColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
           ], range: range)
       }

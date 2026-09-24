@@ -9,19 +9,24 @@ enum MarkdownCompiler {
     case quote
     case unorderedList
     case orderedList(Int)
+    case horizontalRule
   }
 
   enum Inline: Equatable {
     case bold
     case italic
+    case boldItalic
     case code
     case strikethrough
     case link
+    case image
   }
 
   struct Span: Equatable {
+    let sourceRange: NSRange
     let range: NSRange
     let style: Inline
+    let destination: String?
   }
 
   struct Line: Equatable {
@@ -34,7 +39,10 @@ enum MarkdownCompiler {
     let length = (source as NSString).length
     var result = Line()
 
-    if let match = first(#"^ {0,3}(#{1,6})[ \t]+"#, in: source) {
+    if first(#"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"#, in: source) != nil {
+      result.block = .horizontalRule
+      return result
+    } else if let match = first(#"^ {0,3}(#{1,6})[ \t]+"#, in: source) {
       let marker = match.range(at: 1)
       result.block = .heading(marker.length)
       result.hiddenRanges.append(match.range)
@@ -56,8 +64,17 @@ enum MarkdownCompiler {
       #"(?<!\\)`([^`]+)`"#, style: .code, source: source,
       result: &result, protected: &protected, protectsContent: true)
     addDelimited(
-      #"(?<!\\)!?\[([^\]]+)\]\(([^)]+)\)"#, style: .link, source: source,
-      result: &result, protected: &protected, protectsContent: true)
+      #"(?<!\\)!\[([^\]]*)\]\(([^)]+)\)"#, style: .image, source: source,
+      result: &result, protected: &protected, protectsContent: true, destinationGroup: 2)
+    addDelimited(
+      #"(?<![!\\])\[([^\]]+)\]\(([^)]+)\)"#, style: .link, source: source,
+      result: &result, protected: &protected, protectsContent: true, destinationGroup: 2)
+    addDelimited(
+      #"(?<!\\)\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*"#, style: .boldItalic,
+      source: source, result: &result, protected: &protected, protectsContent: true)
+    addDelimited(
+      #"(?<!\\)___(?=\S)(.+?)(?<=\S)___"#, style: .boldItalic,
+      source: source, result: &result, protected: &protected, protectsContent: true)
     addDelimited(
       #"(?<!\\)\*\*(?=\S)(.+?)(?<=\S)\*\*"#, style: .bold, source: source,
       result: &result, protected: &protected)
@@ -75,7 +92,7 @@ enum MarkdownCompiler {
       source: source, result: &result, protected: &protected)
 
     // A backslash escapes punctuation in Markdown. Hide it outside the active line.
-    for match in matches(#"\\([\\`*_~\[\]()>#-])"#, in: source) {
+    for match in matches(#"\\([\\`*_~\[\]()>#+.!-])"#, in: source) {
       if !protected.contains(where: { intersects($0, match.range) }) {
         result.hiddenRanges.append(NSRange(location: match.range.location, length: 1))
       }
@@ -89,14 +106,18 @@ enum MarkdownCompiler {
 
   private static func addDelimited(
     _ pattern: String, style: Inline, source: String,
-    result: inout Line, protected: inout [NSRange], protectsContent: Bool = false
+    result: inout Line, protected: inout [NSRange], protectsContent: Bool = false,
+    destinationGroup: Int? = nil
   ) {
     for match in matches(pattern, in: source) {
       let content = match.range(at: 1)
       guard content.location != NSNotFound,
         !protected.contains(where: { intersects($0, match.range) })
       else { continue }
-      result.spans.append(Span(range: content, style: style))
+      let destination = destinationGroup.map { (source as NSString).substring(with: match.range(at: $0)) }
+      result.spans.append(Span(
+        sourceRange: match.range, range: content, style: style,
+        destination: destination))
       let opening = NSRange(
         location: match.range.location,
         length: content.location - match.range.location)

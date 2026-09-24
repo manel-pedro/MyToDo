@@ -1,20 +1,26 @@
 import AppKit
+import WebKit
 
 @MainActor
-final class TaskEditorPanel: NSPanel, NSWindowDelegate {
+final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
   private let store: TaskStore
   private let onClose: () -> Void
   private let titleField = NSTextField()
   private let notesView = NSTextView()
+  private let renderedNotes: WKWebView
   private var markdownPreview: MarkdownLivePreview?
+  private var previewUpdate: DispatchWorkItem?
   private let datePicker = NSDatePicker()
   private let completed = NSButton(checkboxWithTitle: "Completed", target: nil, action: nil)
 
   init(store: TaskStore, onClose: @escaping () -> Void) {
     self.store = store
     self.onClose = onClose
+    let webConfiguration = WKWebViewConfiguration()
+    webConfiguration.defaultWebpagePreferences.allowsContentJavaScript = false
+    renderedNotes = WKWebView(frame: .zero, configuration: webConfiguration)
     super.init(
-      contentRect: NSRect(x: 0, y: 0, width: 450, height: 480),
+      contentRect: NSRect(x: 0, y: 0, width: 450, height: 630),
       styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
     isFloatingPanel = true
     level = .floating
@@ -50,6 +56,9 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
 
     let notesScroll = textScroll(for: notesView)
     markdownPreview = MarkdownLivePreview(textView: notesView)
+    markdownPreview?.onChange = { [weak self] in self?.scheduleRenderedPreview() }
+    renderedNotes.underPageBackgroundColor = .textBackgroundColor
+    renderedNotes.navigationDelegate = self
     let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelAction))
     let save = NSButton(
       title: store.selectedTask == nil ? "Create" : "Save", target: self,
@@ -63,6 +72,7 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
     let stack = NSStackView(views: [
       section("Title"), titleField,
       section("Notes"), notesScroll,
+      section("Rendered Preview"), renderedNotes,
       dateRow,
       actions,
     ])
@@ -78,7 +88,9 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
       stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
       titleField.widthAnchor.constraint(equalTo: stack.widthAnchor),
       notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      notesScroll.heightAnchor.constraint(equalToConstant: 270),
+      notesScroll.heightAnchor.constraint(equalToConstant: 210),
+      renderedNotes.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      renderedNotes.heightAnchor.constraint(equalToConstant: 180),
       actions.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
   }
@@ -124,6 +136,7 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
     titleField.stringValue = draft.title
     notesView.string = draft.notes
     markdownPreview?.render()
+    updateRenderedPreview()
     datePicker.dateValue = draft.date
     completed.state = draft.isCompleted ? .on : .off
     makeFirstResponder(titleField)
@@ -135,6 +148,20 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
       date: datePicker.dateValue, isCompleted: completed.state == .on)
   }
 
+  private func scheduleRenderedPreview() {
+    previewUpdate?.cancel()
+    let update = DispatchWorkItem { [weak self] in self?.updateRenderedPreview() }
+    previewUpdate = update
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: update)
+  }
+
+  private func updateRenderedPreview() {
+    let support = FileManager.default.urls(
+      for: .applicationSupportDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("SevenDayTodo", isDirectory: true)
+    renderedNotes.loadHTMLString(MarkdownHTMLRenderer.render(notesView.string), baseURL: support)
+  }
+
   @objc private func saveAction() {
     captureDraft()
     if store.saveDraft() { close() }
@@ -143,7 +170,22 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate {
   @objc private func cancelAction() { close() }
 
   func windowWillClose(_ notification: Notification) {
+    previewUpdate?.cancel()
     store.closeEditor()
     onClose()
+  }
+
+  func webView(
+    _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction
+  ) async -> WKNavigationActionPolicy {
+    guard navigationAction.navigationType == .linkActivated else {
+      return .allow
+    }
+    if let url = navigationAction.request.url,
+      ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "")
+    {
+      NSWorkspace.shared.open(url)
+    }
+    return .cancel
   }
 }
