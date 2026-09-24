@@ -1,13 +1,14 @@
-# Vibe Coded Seven Day Todo
+# Seven Day Todo
 
 A small, local-first macOS to-do app that shows the three previous days, today,
 and the next three days in one window.
 
 ## Current features
 
-- Seven always-current day cards with a highlighted Today card
-- Add and complete tasks inline
-- Delete tasks with the trash button
+- Seven day cards centered on today, with one-day navigation and a Today reset
+- Floating editor for task titles, long notes, dates, and completion
+- Drag tasks between visible days or within a day to reorder them
+- Soft-delete tasks with the trash button
 - Local JSON persistence in Application Support
 - A repository boundary and sync metadata ready for a future remote backend
 - Native light and dark mode support
@@ -29,18 +30,21 @@ Build a signed personal-use `.app` bundle with:
 
 The finished application is written to `dist/Seven Day Todo.app`.
 
-Run the local persistence checks after a debug build with:
+Run the local persistence checks after building the app with:
 
 ```sh
-.build/out/Products/Debug/SevenDayTodo --self-test
+"dist/Seven Day Todo.app/Contents/MacOS/SevenDayTodo" --self-test
 ```
 
 ## Architecture
 
-`BoardViewController` and `TaskStore` own the UI state. They communicate through the
-`TaskRepository` protocol rather than depending directly on a remote service.
-`JSONTaskRepository` is the current local implementation.
+`BoardViewController` and `TaskEditorPanel` render AppKit controls and call `TaskStore`.
+The store owns the visible date range, editor draft, selected task, and errors.
+It depends on the `TaskRepository` interface.
+`LocalTaskRepository` implements it; `JSONFileTaskStorage` handles JSON encoding, migration,
+and atomic file writes through `TaskPersistence`. The repository only updates its
+in-memory snapshot after a successful file write.
 
-Tasks already carry stable UUIDs, update timestamps, soft-deletion markers, and
-a sync state. A future CloudKit or Supabase adapter can synchronize these local
-records while keeping the app usable offline.
+Tasks carry stable UUIDs, update timestamps, soft-deletion markers, and a sync state
+for future PocketBase synchronization. The app writes task-only JSON and can read
+both the original task array and the intermediate object format.
