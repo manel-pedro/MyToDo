@@ -318,6 +318,9 @@ private final class DayCardView: NSView {
   private let compact: Bool
   private let items: [TodoItem]
   private let rows = NSStackView()
+  private let taskScroll = NSScrollView()
+  private let insertionMarker = TaskInsertionMarker()
+  private let dropHint = NSTextField(labelWithString: "")
 
   init(date: Date, items: [TodoItem], compact: Bool = false) {
     self.compact = compact
@@ -334,11 +337,7 @@ private final class DayCardView: NSView {
   private func buildView() {
     wantsLayer = true
     layer?.cornerRadius = compact ? 8 : 14
-    layer?.borderWidth = Calendar.current.isDateInToday(date) ? 2 : 1
-    layer?.borderColor =
-      Calendar.current.isDateInToday(date)
-      ? NSColor.controlAccentColor.cgColor : NSColor.separatorColor.cgColor
-    layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+    setDropHighlighted(false)
 
     let dayName = NSTextField(
       labelWithString: Calendar.current.isDateInToday(date)
@@ -373,12 +372,22 @@ private final class DayCardView: NSView {
       }
     }
 
-    let scroll = NSScrollView()
+    let scroll = taskScroll
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
-    scroll.documentView = rows
+    // Keep short lists at the top, where an empty day's drop marker appears.
+    let document = TaskListDocumentView()
+    document.translatesAutoresizingMaskIntoConstraints = false
     rows.translatesAutoresizingMaskIntoConstraints = false
-    rows.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+    document.addSubview(rows)
+    scroll.documentView = document
+    NSLayoutConstraint.activate([
+      document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+      rows.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+      rows.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+      rows.topAnchor.constraint(equalTo: document.topAnchor),
+      rows.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+    ])
 
     let add = NSButton(title: compact ? "+" : "+ Add", target: self, action: #selector(addTask(_:)))
     add.toolTip = "Add task on \(date.formatted(date: .complete, time: .omitted))"
@@ -405,6 +414,27 @@ private final class DayCardView: NSView {
       scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
     if compact { dateHeader.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+
+    insertionMarker.isHidden = true
+    addSubview(insertionMarker)
+    dropHint.font = .systemFont(ofSize: 11, weight: .medium)
+    dropHint.textColor = .controlAccentColor
+    dropHint.backgroundColor = .controlBackgroundColor
+    dropHint.drawsBackground = true
+    dropHint.alignment = .center
+    dropHint.wantsLayer = true
+    dropHint.layer?.cornerRadius = 6
+    dropHint.layer?.masksToBounds = true
+    dropHint.toolTip = "Move task to \(date.formatted(date: .complete, time: .omitted))"
+    dropHint.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(dropHint)
+    NSLayoutConstraint.activate([
+      dropHint.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 6),
+      dropHint.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -6),
+      dropHint.centerXAnchor.constraint(equalTo: centerXAnchor),
+      dropHint.bottomAnchor.constraint(equalTo: bottomAnchor, constant: compact ? -5 : -50),
+      dropHint.heightAnchor.constraint(equalToConstant: 22),
+    ])
   }
 
   private func separator() -> NSBox {
@@ -415,37 +445,69 @@ private final class DayCardView: NSView {
   @objc private func addTask(_ sender: NSButton) { onAdd?(sender) }
 
   override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    dragOperation(sender)
-  }
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    dragOperation(sender)
-  }
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    layer?.borderColor = NSColor.separatorColor.cgColor
+    updateDropFeedback(sender)
   }
 
-  private func dragOperation(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    guard draggedID(sender) != nil else { return [] }
-    layer?.borderColor = NSColor.controlAccentColor.cgColor
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    if let event = NSApp.currentEvent,
+      taskScroll.bounds.contains(taskScroll.convert(sender.draggingLocation, from: nil)) {
+      _ = taskScroll.contentView.autoscroll(with: event)
+    }
+    return updateDropFeedback(sender)
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    setDropHighlighted(false)
+  }
+
+  private func setDropHighlighted(_ highlighted: Bool) {
+    let today = Calendar.current.isDateInToday(date)
+    layer?.borderWidth = highlighted || today ? 2 : 1
+    layer?.borderColor = highlighted || today
+      ? NSColor.controlAccentColor.cgColor : NSColor.separatorColor.cgColor
+    layer?.backgroundColor = highlighted
+      ? NSColor.controlAccentColor.withAlphaComponent(0.10).cgColor
+      : NSColor.controlBackgroundColor.cgColor
+    insertionMarker.isHidden = !highlighted
+    dropHint.isHidden = !highlighted
+  }
+
+  private func updateDropFeedback(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    guard let id = draggedID(sender) else {
+      setDropHighlighted(false)
+      return []
+    }
+    setDropHighlighted(true)
+    dropHint.stringValue = compact ? "Drop here" : "Move to \(date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))"
+    let point = convert(sender.draggingLocation, from: nil)
+    let placement = dropPlacement(for: id, at: point)
+    let visibleList = convert(taskScroll.contentView.bounds, from: taskScroll.contentView)
+    let y = min(max(placement.y, visibleList.minY + 4), visibleList.maxY - 4)
+    let inset: CGFloat = compact ? 6 : 12
+    insertionMarker.frame = NSRect(x: inset, y: y - 3, width: max(0, bounds.width - 2 * inset), height: 6)
+    insertionMarker.needsDisplay = true
     return .move
   }
 
+  // Use the same placement for the visual marker and the persisted order.
+  private func dropPlacement(for id: UUID, at point: NSPoint) -> (index: Int, y: CGFloat) {
+    let targets = rows.arrangedSubviews.compactMap { $0 as? TaskRowView }.filter { $0.taskID != id }
+    for (index, row) in targets.enumerated() {
+      let frame = convert(row.bounds, from: row)
+      if point.y > frame.midY { return (index, frame.maxY + rows.spacing / 2) }
+    }
+    if let last = targets.last {
+      return (targets.count, convert(last.bounds, from: last).minY - rows.spacing / 2)
+    }
+    let visibleList = convert(taskScroll.contentView.bounds, from: taskScroll.contentView)
+    return (0, visibleList.maxY - 12)
+  }
+
   override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    layer?.borderColor = NSColor.separatorColor.cgColor
+    setDropHighlighted(false)
     guard let id = draggedID(sender) else { return false }
     let point = convert(sender.draggingLocation, from: nil)
-    var index = items.count
-    for (offset, row) in rows.arrangedSubviews.enumerated() where row is TaskRowView {
-      let frame = convert(row.bounds, from: row)
-      if point.y > frame.midY {
-        index = offset
-        break
-      }
-    }
-    if let sourceIndex = items.firstIndex(where: { $0.id == id }), sourceIndex < index {
-      index -= 1
-    }
-    onDrop?(id, index)
+    onDrop?(id, dropPlacement(for: id, at: point).index)
     return true
   }
 
@@ -465,15 +527,28 @@ final class TaskRowView: NSView, NSDraggingSource {
   var onDelete: (() -> Void)?
   var onDragBegan: ((TaskRowView) -> Void)?
   var onDragEnded: (() -> Void)?
+  var taskID: UUID { item.id }
   private let item: TodoItem
+  private let grip = NSImageView()
+  private let label = NSTextField(labelWithString: "")
   private var dragging = false
+  private var mouseDownPoint: NSPoint?
+  private var hoverTracking: NSTrackingArea?
 
   init(item: TodoItem, compact: Bool = false) {
     self.item = item
     super.init(frame: .zero)
+    wantsLayer = true
+    layer?.cornerRadius = 6
+    grip.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag task")
+    grip.contentTintColor = .tertiaryLabelColor
+    grip.imageScaling = .scaleProportionallyDown
+    grip.toolTip = "Drag to move to another day"
+    grip.widthAnchor.constraint(equalToConstant: compact ? 10 : 13).isActive = true
+    grip.heightAnchor.constraint(equalToConstant: 16).isActive = true
     let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggle))
     checkbox.state = item.isCompleted ? .on : .off
-    let label = NSTextField(labelWithString: item.title)
+    label.stringValue = item.title
     label.font = .systemFont(ofSize: 12)
     label.textColor = item.isCompleted ? .secondaryLabelColor : .labelColor
     label.lineBreakMode = .byTruncatingTail
@@ -483,58 +558,130 @@ final class TaskRowView: NSView, NSDraggingSource {
       target: self, action: #selector(deleteTask))
     delete.isBordered = false
     delete.contentTintColor = .tertiaryLabelColor
-    let stack = NSStackView(views: compact ? [checkbox, label] : [delete, checkbox, label])
+    let stack = NSStackView(views: compact ? [grip, checkbox, label] : [delete, grip, checkbox, label])
     stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.alignment = .centerY
     stack.spacing = 4
     addSubview(stack)
     NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-      stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-      stack.topAnchor.constraint(equalTo: topAnchor),
-      stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-      heightAnchor.constraint(greaterThanOrEqualToConstant: compact ? 20 : 27),
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
+      stack.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+      stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+      heightAnchor.constraint(greaterThanOrEqualToConstant: compact ? 22 : 31),
     ])
-    toolTip = item.title + (item.notes.isEmpty ? "\nDrag to move; click to edit" : "\n" + item.notes)
+    toolTip = item.title + "\nDrag the handle or title to move; click to edit."
+      + (item.notes.isEmpty ? "" : "\n" + item.notes)
   }
 
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverTracking { removeTrackingArea(hoverTracking) }
+    let tracking = NSTrackingArea(rect: .zero,
+      options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+    addTrackingArea(tracking)
+    hoverTracking = tracking
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.07).cgColor
+    grip.contentTintColor = .secondaryLabelColor
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    layer?.backgroundColor = nil
+    grip.contentTintColor = .tertiaryLabelColor
+  }
+
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    addCursorRect(convert(grip.bounds, from: grip), cursor: .openHand)
+    addCursorRect(convert(label.bounds, from: label), cursor: .openHand)
+  }
+
   override func hitTest(_ point: NSPoint) -> NSView? {
     let hit = super.hitTest(point)
-    return hit is NSTextField ? self : hit
+    return hit is NSTextField || hit === grip ? self : hit
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  override func mouseDown(with event: NSEvent) {
+    mouseDownPoint = convert(event.locationInWindow, from: nil)
+    dragging = false
   }
 
   override func mouseUp(with event: NSEvent) {
     if !dragging { onOpen?() }
+    mouseDownPoint = nil
     dragging = false
   }
 
   override func mouseDragged(with event: NSEvent) {
-    guard !dragging else { return }
+    guard !dragging, let start = mouseDownPoint else { return }
+    let point = convert(event.locationInWindow, from: nil)
+    guard hypot(point.x - start.x, point.y - start.y) >= 5 else { return }
     dragging = true
     let writer = NSPasteboardItem()
     writer.setString(item.id.uuidString, forType: Self.pasteboardType)
-    let image = NSImage(size: NSSize(width: max(bounds.width, 120), height: 28))
-    image.lockFocus()
-    NSColor.controlBackgroundColor.setFill()
-    NSRect(origin: .zero, size: image.size).fill()
-    (item.title as NSString).draw(
-      at: NSPoint(x: 8, y: 6), withAttributes: [.font: NSFont.systemFont(ofSize: 12)])
-    image.unlockFocus()
+    let image = dragPreview()
     let draggingItem = NSDraggingItem(pasteboardWriter: writer)
-    draggingItem.setDraggingFrame(NSRect(origin: .zero, size: image.size), contents: image)
-    beginDraggingSession(with: [draggingItem], event: event, source: self)
+    draggingItem.setDraggingFrame(
+      NSRect(x: point.x - 24, y: point.y - 42, width: image.size.width, height: image.size.height), contents: image)
+    let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+    session.animatesToStartingPositionsOnCancelOrFail = true
+  }
+
+  private func dragPreview() -> NSImage {
+    let size = NSSize(width: min(320, max(220, bounds.width)), height: 68)
+    let image = NSImage(size: size)
+    image.lockFocus()
+    effectiveAppearance.performAsCurrentDrawingAppearance {
+      let card = NSBezierPath(roundedRect: NSRect(origin: .zero, size: size).insetBy(dx: 6, dy: 6),
+                              xRadius: 10, yRadius: 10)
+      NSGraphicsContext.saveGraphicsState()
+      let shadow = NSShadow()
+      shadow.shadowColor = NSColor.shadowColor.withAlphaComponent(0.25)
+      shadow.shadowBlurRadius = 6
+      shadow.shadowOffset = NSSize(width: 0, height: -2)
+      shadow.set()
+      NSColor.controlBackgroundColor.setFill()
+      card.fill()
+      NSGraphicsContext.restoreGraphicsState()
+      NSColor.separatorColor.setStroke()
+      card.lineWidth = 1
+      card.stroke()
+      NSColor.controlAccentColor.setFill()
+      NSBezierPath(roundedRect: NSRect(x: 14, y: 17, width: 3, height: 34), xRadius: 1.5, yRadius: 1.5).fill()
+      let paragraph = NSMutableParagraphStyle()
+      paragraph.lineBreakMode = .byTruncatingTail
+      (item.title as NSString).draw(in: NSRect(x: 26, y: 34, width: size.width - 44, height: 19), withAttributes: [
+        .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+        .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph,
+      ])
+      ("Move to another day" as NSString).draw(at: NSPoint(x: 26, y: 17), withAttributes: [
+        .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
+      ])
+    }
+    image.unlockFocus()
+    return image
   }
 
   func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+    alphaValue = 0.35
     onDragBegan?(self)
   }
 
   func draggingSession(
     _ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation
   ) {
-    dragging = false
+    alphaValue = 1
+    mouseDownPoint = nil
+    layer?.backgroundColor = nil
+    // Keep mouse-up from opening the editor after a drag. Next mouse-down resets it.
     onDragEnded?()
   }
 
@@ -543,4 +690,21 @@ final class TaskRowView: NSView, NSDraggingSource {
   ) -> NSDragOperation { context == .withinApplication ? .move : [] }
   @objc private func toggle() { onToggle?() }
   @objc private func deleteTask() { onDelete?() }
+}
+
+@MainActor
+private final class TaskInsertionMarker: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func draw(_ dirtyRect: NSRect) {
+    NSColor.controlAccentColor.setFill()
+    NSBezierPath(ovalIn: NSRect(x: 0, y: 0, width: 6, height: 6)).fill()
+    NSBezierPath(roundedRect: NSRect(x: 3, y: 1.5, width: max(0, bounds.width - 3), height: 3),
+                 xRadius: 1.5, yRadius: 1.5).fill()
+  }
+}
+
+@MainActor
+private final class TaskListDocumentView: NSView {
+  override var isFlipped: Bool { true }
 }
