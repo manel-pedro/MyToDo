@@ -5,6 +5,16 @@ import Darwin
 @MainActor
 struct SevenDayTodoApp {
   static func main() {
+    if CommandLine.arguments.contains("--ui-self-test") {
+      do {
+        try PopoverSelfTest.run()
+        print("Popover UI self-test passed")
+        exit(EXIT_SUCCESS)
+      } catch {
+        fputs("Popover UI self-test failed: \(error)\n", stderr)
+        exit(EXIT_FAILURE)
+      }
+    }
     if CommandLine.arguments.contains("--self-test") {
       do {
         try SelfTest.run()

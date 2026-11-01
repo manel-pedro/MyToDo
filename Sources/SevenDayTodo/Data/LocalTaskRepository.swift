@@ -20,6 +20,34 @@ final class LocalTaskRepository: TaskRepository {
       .sorted(by: Self.taskOrder)
   }
 
+  func unfinishedTasks(before dayKey: String) throws -> [TodoItem] {
+    items.filter { $0.deletedAt == nil && !$0.isCompleted && $0.dayKey < dayKey }
+      .sorted { lhs, rhs in
+        if lhs.dayKey != rhs.dayKey { return lhs.dayKey > rhs.dayKey }
+        return Self.taskOrder(lhs, rhs)
+      }
+  }
+
+  func applyPlan(_ updates: [TaskPlanUpdate]) throws {
+    guard !updates.isEmpty else { return }
+    try commit { items in
+      for update in updates {
+        let index = try Self.activeTaskIndex(update.id, in: items)
+        if items[index].dayKey != update.dayKey || update.destinationIndex != nil {
+          Self.reorder(
+            id: update.id, to: update.dayKey,
+            at: update.destinationIndex ?? Self.activeTasks(in: items, on: update.dayKey).count,
+            in: &items)
+        }
+        let current = try Self.activeTaskIndex(update.id, in: items)
+        if items[current].isCompleted != update.isCompleted {
+          items[current].isCompleted = update.isCompleted
+          Self.markPending(&items[current])
+        }
+      }
+    }
+  }
+
   func create(title: String, notes: String, dayKey: String, isCompleted: Bool) throws -> TodoItem {
     let title = try Self.validatedTitle(title)
     return try commit { items in

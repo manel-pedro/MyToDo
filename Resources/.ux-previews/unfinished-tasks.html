@@ -1,0 +1,81 @@
+<div id="unfinished-ux" class="viz-carousel viz-dotted-background" aria-label="Unfinished task reminder designs">
+  <section data-variant="Daily review" aria-label="Automatic daily review"></section>
+  <section data-variant="Quiet reminder" aria-label="Reminder banner" hidden></section>
+</div>
+<style>
+#unfinished-ux { color-scheme: light dark; }
+#unfinished-ux section { min-height: 540px; padding: 24px 12px; box-sizing: border-box; }
+#unfinished-ux .todo-surface { --todo-bg:light-dark(#f7f7f8,#292b2d); --todo-fg:light-dark(#222427,#f0f0f2); --todo-muted:light-dark(#62656a,#b4b6bb); --todo-line:light-dark(#dedfe2,#46484b); --todo-control:light-dark(#ffffff,#3c3e41); --todo-accent:light-dark(#0867c9,#84bcff); background:var(--todo-bg); color:var(--todo-fg); max-width:580px; margin:0 auto; border:1px solid var(--todo-line); border-radius:16px; padding:22px; font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; box-shadow:0 12px 32px light-dark(#00000012,#00000030); }
+#unfinished-ux h3 { margin:0; font:500 20px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+#unfinished-ux p { margin:6px 0 0; }
+#unfinished-ux .todo-muted { color:var(--todo-muted); font-size:12px; }
+#unfinished-ux .todo-head, #unfinished-ux .todo-footer, #unfinished-ux .todo-banner { display:flex; justify-content:space-between; gap:14px; align-items:center; flex-wrap:wrap; }
+#unfinished-ux .todo-head { align-items:start; margin-bottom:12px; }
+#unfinished-ux .todo-row { padding:14px 0; border-top:1px solid var(--todo-line); display:grid; grid-template-columns:minmax(0,1fr) minmax(160px,190px); gap:14px; align-items:center; }
+#unfinished-ux .todo-title { font-weight:500; overflow-wrap:anywhere; }
+#unfinished-ux select, #unfinished-ux input, #unfinished-ux button { color:var(--todo-fg); background:var(--todo-control); border:1px solid var(--todo-line); border-radius:7px; padding:7px 10px; font:inherit; max-width:100%; box-sizing:border-box; }
+#unfinished-ux select, #unfinished-ux input { width:100%; }
+#unfinished-ux input { margin-top:6px; }
+#unfinished-ux button { cursor:pointer; }
+#unfinished-ux button.todo-primary { background:var(--todo-accent); color:light-dark(#ffffff,#142136); border-color:transparent; }
+#unfinished-ux button:disabled { opacity:.5; cursor:default; }
+#unfinished-ux .todo-link { background:transparent; border-color:transparent; color:var(--todo-accent); }
+#unfinished-ux .todo-footer { border-top:1px solid var(--todo-line); padding-top:16px; margin-top:4px; }
+#unfinished-ux .todo-result { padding:12px 0; border-top:1px solid var(--todo-line); }
+#unfinished-ux .todo-badge { display:inline-block; font-size:12px; color:var(--todo-muted); }
+#unfinished-ux .todo-chip { margin-top:14px; }
+@media(max-width:480px) { #unfinished-ux section { min-height:700px; padding:16px 4px; } #unfinished-ux .todo-surface { padding:16px; } #unfinished-ux .todo-row { grid-template-columns:1fr; gap:8px; } }
+@media(pointer:coarse) { #unfinished-ux button, #unfinished-ux select, #unfinished-ux input { min-height:44px; } }
+</style>
+<script>
+(() => {
+ const root=document.getElementById('unfinished-ux');
+ const tasks=[{title:'Finish report',from:'Yesterday'},{title:'Reply to email',from:'2 days ago'},{title:'Book appointment',from:'Last week'}];
+ const variants=['Daily review','Quiet reminder'];
+ const designOptions=variants.map(()=>({showOriginalDates:true}));
+ let states=variants.map((v,i)=>({open:i===0,choices:['','',''],dates:['','',''],applied:false}));
+ const safe=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ function restore(snapshot) {
+  const saved=snapshot?.privateContent?.reviews;
+  if(Array.isArray(saved)&&saved.length===2&&saved.every(s=>Array.isArray(s.choices)&&s.choices.length===3&&Array.isArray(s.dates)&&s.dates.length===3)) states=saved;
+ }
+ restore(window.openai?.widgetState);
+ function persist(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{concept:'Daily review versus quiet reminder'},privateContent:{reviews:states}}).catch(()=>{});}
+ function render(i){
+  const section=root.querySelectorAll('section')[i],s=states[i];
+  const count=s.applied?s.choices.filter(v=>!v).length:3;
+  let content='';
+  if(s.open&&!s.applied){
+   content=`<div class="todo-head"><div><h3>Carry forward</h3><p>3 unfinished tasks from earlier days</p></div><span class="todo-badge">${i===0?'First open today':'Review unfinished'}</span></div>`;
+   content+=tasks.map((task,j)=>`<div class="todo-row"><div><div class="todo-title">${task.title}</div><div class="todo-muted todo-original" ${designOptions[i].showOriginalDates?'':'hidden'}>${task.from}</div></div><div><label class="todo-muted" for="carry-${i}-${j}">Next step</label><select id="carry-${i}-${j}" data-task="${j}" aria-label="Plan ${task.title}">${[['','Decide later'],['today','Today'],['tomorrow','Tomorrow'],['date','Choose a date…'],['done','Already completed']].map(([val,label])=>`<option value="${val}" ${s.choices[j]===val?'selected':''}>${label}</option>`).join('')}</select>${s.choices[j]==='date'?`<input type="date" data-date="${j}" value="${safe(s.dates[j])}" aria-label="New date for ${task.title}">`:''}</div></div>`).join('');
+   const ready=s.choices.some(Boolean)&&s.choices.every((v,j)=>v!=='date'||s.dates[j]);
+   content+=`<div class="todo-footer"><button class="todo-link" data-action="later">Review later</button><button class="todo-primary" data-action="apply" ${ready?'':'disabled'}>Update plan</button></div>`;
+  }else if(s.applied){
+   content='<div class="todo-head"><h3>Plan updated</h3><button class="todo-link" data-action="undo">Undo</button></div>';
+   content+=tasks.map((task,j)=>`<div class="todo-result"><div class="todo-title">${task.title}</div><div class="todo-muted">${!s.choices[j]?'Still waiting for review':s.choices[j]==='done'?'Marked completed':s.choices[j]==='date'?'Moved to '+safe(s.dates[j]):'Moved to '+(s.choices[j]==='today'?'today':'tomorrow')}</div></div>`).join('');
+   content+=`<p class="todo-muted" role="status">${count?count+' task'+(count===1?'':'s')+' still waiting for review.':'All earlier tasks reviewed.'}</p>`;
+  }else{
+   content=`<div class="todo-banner"><div><div class="todo-title">${count} unfinished tasks</div><p class="todo-muted">From earlier days · ready to reschedule</p></div><button class="todo-primary" data-action="review">Review</button></div>`;
+  }
+  section.innerHTML=`<div class="todo-surface" aria-label="${variants[i]} reminder">${content}</div>`;
+  section.querySelectorAll('select').forEach(el=>el.addEventListener('change',()=>{s.choices[Number(el.dataset.task)]=el.value;render(i);persist();}));
+  section.querySelectorAll('input').forEach(el=>el.addEventListener('change',()=>{s.dates[Number(el.dataset.date)]=el.value;render(i);persist();}));
+  section.querySelectorAll('button').forEach(el=>el.addEventListener('click',()=>{
+   const action=el.dataset.action;
+   if(action==='review')s.open=true;
+   if(action==='later'){s.open=false;s.choices=['','',''];s.dates=['','',''];}
+   if(action==='apply')s.applied=true;
+   if(action==='undo'){s.applied=false;s.open=true;}
+   render(i);persist();
+  }));
+ }
+ states.forEach((_,i)=>render(i));
+ if(globalThis.Tweak){
+  root.querySelectorAll('section').forEach((section,i)=>{
+   const tweak=new Tweak({container:section,onChange:()=>{section.querySelectorAll('.todo-original').forEach(el=>el.hidden=!designOptions[i].showOriginalDates);}});
+   tweak.addToggle(designOptions[i],'showOriginalDates',{label:'Show original dates'});
+  });
+ }
+ window.addEventListener('openai:set_globals',e=>{restore(e.detail?.globals?.widgetState);states.forEach((_,i)=>render(i));});
+})();
+</script>

@@ -1,8 +1,17 @@
 import Foundation
 
+struct TaskPlanUpdate {
+  var id: UUID
+  var dayKey: String
+  var isCompleted: Bool
+  var destinationIndex: Int? = nil
+}
+
 @MainActor
 protocol TaskRepository {
   func tasks(dayKeys: [String]) throws -> [TodoItem]
+  func unfinishedTasks(before dayKey: String) throws -> [TodoItem]
+  func applyPlan(_ updates: [TaskPlanUpdate]) throws
   func create(title: String, notes: String, dayKey: String, isCompleted: Bool) throws -> TodoItem
   func update(id: UUID, title: String, notes: String, dayKey: String, isCompleted: Bool) throws
   func updateNotes(id: UUID, notes: String) throws

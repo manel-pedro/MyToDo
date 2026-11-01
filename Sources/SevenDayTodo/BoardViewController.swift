@@ -5,7 +5,16 @@ final class BoardViewController: NSViewController {
   private let store: TaskStore
   private let board = NSStackView()
   private let rangeLabel = NSTextField(labelWithString: "")
-  private var editor: TaskEditorPanel?
+  private let viewMode = NSSegmentedControl(
+    labels: ["Default", "Month"], trackingMode: .selectOne, target: nil, action: nil)
+  private let previous = NSButton(title: "‹", target: nil, action: nil)
+  private let next = NSButton(title: "›", target: nil, action: nil)
+  private let unfinishedButton = NSButton(title: "Unfinished tasks", target: nil, action: nil)
+  private(set) var unfinishedPopover: UnfinishedTasksPopover?
+  private var showedStartupReview = false
+  private var unfinishedDragSource: TaskRowView?
+  private(set) var editor: TaskEditorPopover?
+  private var needsRenderAfterEditing = false
   private var shownError: String?
 
   init(store: TaskStore) {
@@ -26,14 +35,21 @@ final class BoardViewController: NSViewController {
     rangeLabel.textColor = .secondaryLabelColor
     rangeLabel.font = .systemFont(ofSize: 12)
 
-    let previous = NSButton(title: "‹", target: self, action: #selector(previousDay))
-    previous.toolTip = "Previous day"
-    let next = NSButton(title: "›", target: self, action: #selector(nextDay))
-    next.toolTip = "Next day"
+    unfinishedButton.target = self
+    unfinishedButton.action = #selector(toggleUnfinishedTasks)
+    unfinishedButton.toolTip = "Review and reschedule unfinished tasks from earlier days"
+    previous.target = self
+    previous.action = #selector(previousDay)
+    next.target = self
+    next.action = #selector(nextDay)
+    viewMode.target = self
+    viewMode.action = #selector(changeViewMode)
+    viewMode.selectedSegment = 0
+    viewMode.setAccessibilityLabel("Calendar view")
     let today = NSButton(title: "Today", target: self, action: #selector(returnToToday))
     let spacer = NSView()
     spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    let header = NSStackView(views: [title, spacer, rangeLabel, previous, today, next])
+    let header = NSStackView(views: [title, unfinishedButton, spacer, viewMode, rangeLabel, previous, today, next])
     header.orientation = .horizontal
     header.alignment = .centerY
     header.spacing = 8
@@ -60,49 +76,163 @@ final class BoardViewController: NSViewController {
     renderDays()
   }
 
+  override func viewDidAppear() {
+    super.viewDidAppear()
+    guard !showedStartupReview else { return }
+    showedStartupReview = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.view.window != nil else { return }
+      self.store.reload()
+      if !self.store.unfinishedItems.isEmpty { self.showUnfinishedTasks() }
+    }
+  }
+
+  @objc private func toggleUnfinishedTasks() {
+    if let unfinishedPopover, unfinishedPopover.isShown {
+      unfinishedPopover.performClose(nil)
+    } else {
+      store.reload()
+      showUnfinishedTasks()
+    }
+  }
+
+  private func showUnfinishedTasks() {
+    editor?.dismiss()
+    let popover = UnfinishedTasksPopover(store: store)
+    popover.onBeginTaskDrag = { [weak self, weak popover] row in
+      guard let self else { return }
+      // Keep the native drag source alive after its popover closes.
+      self.unfinishedDragSource = row
+      row.onDragEnded = { [weak self] in self?.unfinishedDragSource = nil }
+      // Let AppKit finish starting the drag before revealing the day cards.
+      DispatchQueue.main.async { [weak popover] in popover?.close() }
+    }
+    popover.onOpenTask = { [weak self] item in
+      guard let self, let date = DayKey.date(for: item.dayKey) else { return }
+      self.openEditor(item: item, on: date, anchor: self.unfinishedButton)
+    }
+    popover.onClose = { [weak self, weak popover] in
+      guard let self, self.unfinishedPopover === popover else { return }
+      self.unfinishedPopover = nil
+    }
+    unfinishedPopover = popover
+    popover.show(relativeTo: unfinishedButton.bounds, of: unfinishedButton, preferredEdge: .minY)
+  }
+
   private func renderDays() {
     guard isViewLoaded else { return }
-    if let error = store.errorMessage, error != shownError {
-      shownError = error
-      let alert = NSAlert()
-      alert.messageText = "Seven Day Todo couldn't save this change"
-      alert.informativeText = error
-      alert.runModal()
-    } else if store.errorMessage == nil {
-      shownError = nil
+    if let error = store.errorMessage {
+      if error != shownError {
+        shownError = error
+        let alert = NSAlert()
+        alert.messageText = "Seven Day Todo couldn't save this change"
+        alert.informativeText = error
+        alert.runModal()
+      }
+      return
     }
+    shownError = nil
+    unfinishedButton.title = "Unfinished tasks (\(store.unfinishedItems.count))"
+    unfinishedPopover?.refresh()
+    // Saving from a close request must not remove the positioning view.
+    guard editor == nil else {
+      needsRenderAfterEditing = true
+      return
+    }
+    needsRenderAfterEditing = false
     board.arrangedSubviews.forEach {
       board.removeArrangedSubview($0)
       $0.removeFromSuperview()
     }
-    if let first = store.days.first, let last = store.days.last {
-      rangeLabel.stringValue =
-        "\(first.formatted(.dateTime.day().month(.abbreviated).year())) – \(last.formatted(.dateTime.day().month(.abbreviated).year()))"
-    }
-    for date in store.days {
-      let card = DayCardView(date: date, items: store.items(for: date))
-      card.onAdd = { [weak self, weak card] in self?.openEditor(item: nil, on: date, anchor: card) }
-      card.onOpen = { [weak self, weak card] item in
-        self?.openEditor(item: item, on: date, anchor: card)
+    let isMonth = store.viewMode == .month
+    viewMode.selectedSegment = isMonth ? 1 : 0
+    previous.toolTip = isMonth ? "Previous month" : "Previous day"
+    next.toolTip = isMonth ? "Next month" : "Next day"
+    board.orientation = isMonth ? .vertical : .horizontal
+    board.distribution = isMonth ? .fill : .fillEqually
+    board.alignment = isMonth ? .leading : .top
+    board.spacing = isMonth ? 6 : 12
+    if isMonth {
+      rangeLabel.stringValue = store.focusedDate.formatted(.dateTime.month(.wide).year())
+      let headings = NSStackView()
+      headings.distribution = .fillEqually
+      headings.spacing = 6
+      for date in store.days.prefix(7) {
+        let label = NSTextField(labelWithString: date.formatted(.dateTime.weekday(.abbreviated)))
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+        headings.addArrangedSubview(label)
       }
-      card.onToggle = { [weak self] item in self?.store.toggle(item) }
-      card.onDelete = { [weak self] item in self?.store.delete(item) }
-      card.onDrop = { [weak self] id, index in self?.store.move(itemID: id, to: date, at: index) }
-      board.addArrangedSubview(card)
-      card.heightAnchor.constraint(greaterThanOrEqualToConstant: 470).isActive = true
+      board.addArrangedSubview(headings)
+      headings.widthAnchor.constraint(equalTo: board.widthAnchor).isActive = true
+      headings.heightAnchor.constraint(equalToConstant: 18).isActive = true
+      var firstWeek: NSStackView?
+      for offset in stride(from: 0, to: store.days.count, by: 7) {
+        let week = NSStackView()
+        week.distribution = .fillEqually
+        week.alignment = .top
+        week.spacing = 6
+        board.addArrangedSubview(week)
+        week.widthAnchor.constraint(equalTo: board.widthAnchor).isActive = true
+        week.heightAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
+        if let firstWeek {
+          week.heightAnchor.constraint(equalTo: firstWeek.heightAnchor).isActive = true
+        } else {
+          firstWeek = week
+        }
+        for date in store.days[offset..<(offset + 7)] {
+          let card = makeCard(for: date, compact: true)
+          week.addArrangedSubview(card)
+          card.heightAnchor.constraint(equalTo: week.heightAnchor).isActive = true
+        }
+      }
+    } else {
+      if let first = store.days.first, let last = store.days.last {
+        rangeLabel.stringValue =
+          "\(first.formatted(.dateTime.day().month(.abbreviated).year())) – \(last.formatted(.dateTime.day().month(.abbreviated).year()))"
+      }
+      for date in store.days {
+        let card = makeCard(for: date, compact: false)
+        board.addArrangedSubview(card)
+        card.heightAnchor.constraint(greaterThanOrEqualToConstant: 470).isActive = true
+      }
     }
   }
 
-  private func openEditor(item: TodoItem?, on date: Date, anchor: NSView?) {
-    let anchorRect = anchor.flatMap { anchorView -> NSRect? in
-      guard let window = anchorView.window else { return nil }
-      return window.convertToScreen(anchorView.convert(anchorView.bounds, to: nil))
+  private func makeCard(for date: Date, compact: Bool) -> DayCardView {
+    let card = DayCardView(date: date, items: store.items(for: date), compact: compact)
+    if compact && !Calendar.current.isDate(date, equalTo: store.focusedDate, toGranularity: .month) {
+      card.alphaValue = 0.5
     }
-    editor?.close()
+    card.onAdd = { [weak self] anchor in
+      self?.openEditor(item: nil, on: date, anchor: anchor)
+    }
+    card.onOpen = { [weak self] item, anchor in
+      self?.openEditor(item: item, on: date, anchor: anchor)
+    }
+    card.onToggle = { [weak self] item in self?.store.toggle(item) }
+    card.onDelete = { [weak self] item in self?.store.delete(item) }
+    card.onDrop = { [weak self] id, index in self?.store.move(itemID: id, to: date, at: index) }
+    return card
+  }
+
+  @objc private func changeViewMode() {
+    store.setViewMode(viewMode.selectedSegment == 1 ? .month : .days)
+  }
+
+  private func openEditor(item: TodoItem?, on date: Date, anchor: NSView) {
+    unfinishedPopover?.close()
+    editor?.dismiss()
     if let item { store.beginEditing(item) } else { store.beginNewTask(on: date) }
-    let panel = TaskEditorPanel(store: store) { [weak self] in self?.editor = nil }
-    editor = panel
-    panel.show(near: anchorRect, parent: view.window)
+    let popover = TaskEditorPopover(store: store)
+    popover.onClose = { [weak self, weak popover] in
+      guard let self, self.editor === popover else { return }
+      self.editor = nil
+      if self.needsRenderAfterEditing { self.renderDays() }
+    }
+    editor = popover
+    popover.show(near: anchor)
   }
 
   @objc private func previousDay() { store.shiftDays(-1) }
@@ -112,17 +242,19 @@ final class BoardViewController: NSViewController {
 
 @MainActor
 private final class DayCardView: NSView {
-  var onAdd: (() -> Void)?
-  var onOpen: ((TodoItem) -> Void)?
+  var onAdd: ((NSView) -> Void)?
+  var onOpen: ((TodoItem, NSView) -> Void)?
   var onToggle: ((TodoItem) -> Void)?
   var onDelete: ((TodoItem) -> Void)?
   var onDrop: ((UUID, Int) -> Void)?
 
   private let date: Date
+  private let compact: Bool
   private let items: [TodoItem]
   private let rows = NSStackView()
 
-  init(date: Date, items: [TodoItem]) {
+  init(date: Date, items: [TodoItem], compact: Bool = false) {
+    self.compact = compact
     self.date = date
     self.items = items
     super.init(frame: .zero)
@@ -135,7 +267,7 @@ private final class DayCardView: NSView {
 
   private func buildView() {
     wantsLayer = true
-    layer?.cornerRadius = 14
+    layer?.cornerRadius = compact ? 8 : 14
     layer?.borderWidth = Calendar.current.isDateInToday(date) ? 2 : 1
     layer?.borderColor =
       Calendar.current.isDateInToday(date)
@@ -149,21 +281,25 @@ private final class DayCardView: NSView {
     dayName.textColor =
       Calendar.current.isDateInToday(date) ? .controlAccentColor : .secondaryLabelColor
     let dayNumber = NSTextField(
-      labelWithString: date.formatted(.dateTime.day().month(.abbreviated)))
-    dayNumber.font = .systemFont(ofSize: 20, weight: .bold)
+      labelWithString: compact ? date.formatted(.dateTime.day()) : date.formatted(.dateTime.day().month(.abbreviated)))
+    dayNumber.font = .systemFont(ofSize: compact ? 12 : 20, weight: .bold)
+    if Calendar.current.isDateInToday(date) { dayNumber.textColor = .controlAccentColor }
 
     rows.orientation = .vertical
     rows.alignment = .leading
-    rows.spacing = 7
-    if items.isEmpty {
+    rows.spacing = compact ? 2 : 7
+    if items.isEmpty && !compact {
       let empty = NSTextField(labelWithString: "Nothing planned")
       empty.textColor = .tertiaryLabelColor
       empty.font = .systemFont(ofSize: 11)
       rows.addArrangedSubview(empty)
     } else {
       for item in items {
-        let row = TaskRowView(item: item)
-        row.onOpen = { [weak self] in self?.onOpen?(item) }
+        let row = TaskRowView(item: item, compact: compact)
+        row.onOpen = { [weak self, weak row] in
+          guard let row else { return }
+          self?.onOpen?(item, row)
+        }
         row.onToggle = { [weak self] in self?.onToggle?(item) }
         row.onDelete = { [weak self] in self?.onDelete?(item) }
         rows.addArrangedSubview(row)
@@ -178,20 +314,31 @@ private final class DayCardView: NSView {
     rows.translatesAutoresizingMaskIntoConstraints = false
     rows.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
 
-    let add = NSButton(title: "+ Add", target: self, action: #selector(addTask))
-    let stack = NSStackView(views: [dayName, dayNumber, separator(), scroll, add])
+    let add = NSButton(title: compact ? "+" : "+ Add", target: self, action: #selector(addTask(_:)))
+    add.toolTip = "Add task on \(date.formatted(date: .complete, time: .omitted))"
+    let dateHeader = NSStackView()
+    if compact {
+      dateHeader.addArrangedSubview(dayNumber)
+      dateHeader.addArrangedSubview(NSView())
+      dateHeader.addArrangedSubview(add)
+    }
+    dateHeader.distribution = .fill
+    dateHeader.alignment = .centerY
+    if compact { add.isBordered = false }
+    let stack = NSStackView(views: compact ? [dateHeader, scroll] : [dayName, dayNumber, separator(), scroll, add])
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 10
+    stack.spacing = compact ? 2 : 10
     addSubview(stack)
     NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-      stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-      stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: compact ? 6 : 12),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: compact ? -6 : -12),
+      stack.topAnchor.constraint(equalTo: topAnchor, constant: compact ? 4 : 14),
+      stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: compact ? -4 : -14),
       scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
+    if compact { dateHeader.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
   }
 
   private func separator() -> NSBox {
@@ -199,7 +346,7 @@ private final class DayCardView: NSView {
     box.boxType = .separator
     return box
   }
-  @objc private func addTask() { onAdd?() }
+  @objc private func addTask(_ sender: NSButton) { onAdd?(sender) }
 
   override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
     dragOperation(sender)
@@ -245,21 +392,24 @@ private final class DayCardView: NSView {
 }
 
 @MainActor
-private final class TaskRowView: NSView, NSDraggingSource {
+final class TaskRowView: NSView, NSDraggingSource {
   static let pasteboardType = NSPasteboard.PasteboardType("com.sevendaytodo.task-id")
   var onOpen: (() -> Void)?
   var onToggle: (() -> Void)?
   var onDelete: (() -> Void)?
+  var onDragBegan: ((TaskRowView) -> Void)?
+  var onDragEnded: (() -> Void)?
   private let item: TodoItem
   private var dragging = false
 
-  init(item: TodoItem) {
+  init(item: TodoItem, compact: Bool = false) {
     self.item = item
     super.init(frame: .zero)
     let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggle))
     checkbox.state = item.isCompleted ? .on : .off
     let label = NSTextField(labelWithString: item.title)
     label.font = .systemFont(ofSize: 12)
+    label.textColor = item.isCompleted ? .secondaryLabelColor : .labelColor
     label.lineBreakMode = .byTruncatingTail
     label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     let delete = NSButton(
@@ -267,7 +417,7 @@ private final class TaskRowView: NSView, NSDraggingSource {
       target: self, action: #selector(deleteTask))
     delete.isBordered = false
     delete.contentTintColor = .tertiaryLabelColor
-    let stack = NSStackView(views: [checkbox, label, delete])
+    let stack = NSStackView(views: compact ? [checkbox, label] : [checkbox, label, delete])
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.spacing = 4
     addSubview(stack)
@@ -276,9 +426,9 @@ private final class TaskRowView: NSView, NSDraggingSource {
       stack.trailingAnchor.constraint(equalTo: trailingAnchor),
       stack.topAnchor.constraint(equalTo: topAnchor),
       stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-      heightAnchor.constraint(greaterThanOrEqualToConstant: 27),
+      heightAnchor.constraint(greaterThanOrEqualToConstant: compact ? 20 : 27),
     ])
-    toolTip = item.notes.isEmpty ? "Drag to move; click to edit" : item.notes
+    toolTip = item.title + (item.notes.isEmpty ? "\nDrag to move; click to edit" : "\n" + item.notes)
   }
 
   @available(*, unavailable)
@@ -311,9 +461,20 @@ private final class TaskRowView: NSView, NSDraggingSource {
     beginDraggingSession(with: [draggingItem], event: event, source: self)
   }
 
+  func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+    onDragBegan?(self)
+  }
+
+  func draggingSession(
+    _ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation
+  ) {
+    dragging = false
+    onDragEnded?()
+  }
+
   func draggingSession(
     _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
-  ) -> NSDragOperation { .move }
+  ) -> NSDragOperation { context == .withinApplication ? .move : [] }
   @objc private func toggle() { onToggle?() }
   @objc private func deleteTask() { onDelete?() }
 }

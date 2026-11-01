@@ -1,51 +1,48 @@
 import AppKit
-import WebKit
 
 @MainActor
-final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
+final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
   private let store: TaskStore
-  private let onClose: () -> Void
+  var onClose: (() -> Void)?
+  private var hasFinishedEditing = false
+  private var isSaving = false
   private let titleField = NSTextField()
   private let notesView = NSTextView()
-  private let renderedNotes: WKWebView
   private var markdownPreview: MarkdownLivePreview?
-  private var previewUpdate: DispatchWorkItem?
   private let datePicker = NSDatePicker()
   private let completed = NSButton(checkboxWithTitle: "Completed", target: nil, action: nil)
 
-  init(store: TaskStore, onClose: @escaping () -> Void) {
+  init(store: TaskStore) {
     self.store = store
-    self.onClose = onClose
-    let webConfiguration = WKWebViewConfiguration()
-    webConfiguration.defaultWebpagePreferences.allowsContentJavaScript = false
-    renderedNotes = WKWebView(frame: .zero, configuration: webConfiguration)
-    super.init(
-      contentRect: NSRect(x: 0, y: 0, width: 450, height: 630),
-      styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
-    isFloatingPanel = true
-    level = .floating
+    super.init()
+    behavior = .transient
+    // Avoid AppKit window-transform animation teardown during dismissal.
+    animates = false
     delegate = self
-    title = store.selectedTask == nil ? "New Task" : "Edit Task"
+    contentViewController = NSViewController()
     buildView()
+    contentSize = NSSize(width: 450, height: 550)
     loadDraft()
   }
 
-  func show(near anchor: NSRect?, parent: NSWindow?) {
-    if let anchor {
-      let screen = parent?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? anchor
-      let proposedX = anchor.maxX + 8
-      let x = min(max(proposedX, screen.minX), screen.maxX - frame.width)
-      let y = min(max(anchor.maxY - frame.height, screen.minY), screen.maxY - frame.height)
-      setFrameOrigin(NSPoint(x: x, y: y))
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  func show(near anchor: NSView) {
+    show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX)
+  }
+
+  func dismiss() {
+    if isShown {
+      close()
     } else {
-      center()
+      finishEditing()
     }
-    makeKeyAndOrderFront(nil)
   }
 
   private func buildView() {
-    let content = NSView()
-    contentView = content
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 450, height: 550))
+    contentViewController?.view = content
     titleField.placeholderString = "Task title"
 
     datePicker.datePickerStyle = .textFieldAndStepper
@@ -56,9 +53,6 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
 
     let notesScroll = textScroll(for: notesView)
     markdownPreview = MarkdownLivePreview(textView: notesView)
-    markdownPreview?.onChange = { [weak self] in self?.scheduleRenderedPreview() }
-    renderedNotes.underPageBackgroundColor = .textBackgroundColor
-    renderedNotes.navigationDelegate = self
     let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelAction))
     let save = NSButton(
       title: store.selectedTask == nil ? "Create" : "Save", target: self,
@@ -72,7 +66,6 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
     let stack = NSStackView(views: [
       section("Title"), titleField,
       section("Notes"), notesScroll,
-      section("Rendered Preview"), renderedNotes,
       dateRow,
       actions,
     ])
@@ -88,9 +81,7 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
       stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
       titleField.widthAnchor.constraint(equalTo: stack.widthAnchor),
       notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      notesScroll.heightAnchor.constraint(equalToConstant: 210),
-      renderedNotes.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      renderedNotes.heightAnchor.constraint(equalToConstant: 180),
+      notesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
       actions.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
   }
@@ -136,10 +127,8 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
     titleField.stringValue = draft.title
     notesView.string = draft.notes
     markdownPreview?.render()
-    updateRenderedPreview()
     datePicker.dateValue = draft.date
     completed.state = draft.isCompleted ? .on : .off
-    makeFirstResponder(titleField)
   }
 
   private func captureDraft() {
@@ -148,44 +137,41 @@ final class TaskEditorPanel: NSPanel, NSWindowDelegate, WKNavigationDelegate {
       date: datePicker.dateValue, isCompleted: completed.state == .on)
   }
 
-  private func scheduleRenderedPreview() {
-    previewUpdate?.cancel()
-    let update = DispatchWorkItem { [weak self] in self?.updateRenderedPreview() }
-    previewUpdate = update
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: update)
-  }
-
-  private func updateRenderedPreview() {
-    let support = FileManager.default.urls(
-      for: .applicationSupportDirectory, in: .userDomainMask).first?
-      .appendingPathComponent("SevenDayTodo", isDirectory: true)
-    renderedNotes.loadHTMLString(MarkdownHTMLRenderer.render(notesView.string), baseURL: support)
-  }
-
   @objc private func saveAction() {
+    if saveChanges() { dismiss() }
+  }
+
+  @objc private func cancelAction() { dismiss() }
+
+  private func saveChanges() -> Bool {
+    guard !isSaving else { return false }
+    isSaving = true
+    defer { isSaving = false }
     captureDraft()
-    if store.saveDraft() { close() }
+    return store.saveDraft()
   }
 
-  @objc private func cancelAction() { close() }
+  func popoverShouldClose(_ popover: NSPopover) -> Bool {
+    if hasFinishedEditing || store.draft == nil { return true }
+    if titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      // Dismiss an empty new task without creating it; validate existing tasks.
+      if store.selectedTask == nil { return true }
+    }
+    return saveChanges()
+  }
 
-  func windowWillClose(_ notification: Notification) {
-    previewUpdate?.cancel()
+  func popoverDidShow(_ notification: Notification) {
+    contentViewController?.view.window?.makeFirstResponder(titleField)
+  }
+
+  func popoverDidClose(_ notification: Notification) {
+    finishEditing()
+  }
+
+  private func finishEditing() {
+    guard !hasFinishedEditing else { return }
+    hasFinishedEditing = true
     store.closeEditor()
-    onClose()
-  }
-
-  func webView(
-    _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction
-  ) async -> WKNavigationActionPolicy {
-    guard navigationAction.navigationType == .linkActivated else {
-      return .allow
-    }
-    if let url = navigationAction.request.url,
-      ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "")
-    {
-      NSWorkspace.shared.open(url)
-    }
-    return .cancel
+    onClose?()
   }
 }

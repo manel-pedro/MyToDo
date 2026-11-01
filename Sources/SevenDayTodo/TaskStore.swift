@@ -9,8 +9,15 @@ struct TaskDraft {
 
 @MainActor
 final class TaskStore {
+  enum ViewMode { case days, month }
+
+  private(set) var viewMode: ViewMode = .days
+  private(set) var focusedDate: Date = Calendar.current.startOfDay(for: .now)
   private let tasks: any TaskRepository
   private(set) var items: [TodoItem] = []
+  private(set) var unfinishedItems: [TodoItem] = []
+  private var reviewUndo: [TaskPlanUpdate]?
+  var canUndoReview: Bool { reviewUndo != nil }
   private(set) var days: [Date] = []
   private(set) var selectedTask: TodoItem?
   private(set) var draft: TaskDraft?
@@ -23,15 +30,38 @@ final class TaskStore {
   }
 
   func returnToToday(now: Date = .now) {
-    let today = Calendar.current.startOfDay(for: now)
-    days = (-3...3).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: today) }
-    reload()
+    focusedDate = Calendar.current.startOfDay(for: now)
+    updateDays()
+  }
+
+  func setViewMode(_ mode: ViewMode) {
+    viewMode = mode
+    updateDays()
   }
 
   func shiftDays(_ offset: Int) {
-    guard let first = days.first else { return }
-    days = (0..<7).compactMap {
-      Calendar.current.date(byAdding: .day, value: $0 + offset, to: first)
+    guard let date = Calendar.current.date(
+      byAdding: viewMode == .month ? .month : .day, value: offset, to: focusedDate)
+    else { return }
+    focusedDate = date
+    updateDays()
+  }
+
+  private func updateDays() {
+    let calendar = Calendar.current
+    if viewMode == .month,
+      let month = calendar.dateInterval(of: .month, for: focusedDate),
+      let count = calendar.range(of: .day, in: .month, for: focusedDate)
+    {
+      let padding = (calendar.component(.weekday, from: month.start) - calendar.firstWeekday + 7) % 7
+      let cellCount = ((padding + count.count + 6) / 7) * 7
+      days = (0..<cellCount).compactMap {
+        calendar.date(byAdding: .day, value: $0 - padding, to: month.start)
+      }
+    } else {
+      days = (-1...2).compactMap {
+        calendar.date(byAdding: .day, value: $0, to: focusedDate)
+      }
     }
     reload()
   }
@@ -75,6 +105,7 @@ final class TaskStore {
           dayKey: DayKey.value(for: draft.date),
           isCompleted: draft.isCompleted)
       }
+      reviewUndo = nil
       closeEditor()
       reload()
       return true
@@ -96,9 +127,41 @@ final class TaskStore {
     perform { try tasks.move(id: itemID, to: DayKey.value(for: date), at: index) }
   }
 
-  func reload() {
+  @discardableResult
+  func applyReviewPlan(_ updates: [TaskPlanUpdate]) -> Bool {
+    let originals = unfinishedItems.filter { item in updates.contains { $0.id == item.id } }
+      .sorted { ($0.dayKey, $0.sortOrder) < ($1.dayKey, $1.sortOrder) }
+    guard !updates.isEmpty, originals.count == updates.count else { return false }
+    let undo = originals.map {
+      TaskPlanUpdate(id: $0.id, dayKey: $0.dayKey, isCompleted: $0.isCompleted,
+                     destinationIndex: Int($0.sortOrder))
+    }
     do {
-      items = try tasks.tasks(dayKeys: days.map { DayKey.value(for: $0) })
+      try tasks.applyPlan(updates)
+      reviewUndo = undo
+      reload()
+      return true
+    } catch {
+      report(error)
+      return false
+    }
+  }
+
+  func undoReviewPlan() {
+    guard let reviewUndo else { return }
+    do {
+      try tasks.applyPlan(reviewUndo)
+      self.reviewUndo = nil
+      reload()
+    } catch { report(error) }
+  }
+
+  func reload(now: Date = .now) {
+    do {
+      let visible = try tasks.tasks(dayKeys: days.map { DayKey.value(for: $0) })
+      let unfinished = try tasks.unfinishedTasks(before: DayKey.value(for: now))
+      items = visible
+      unfinishedItems = unfinished
       errorMessage = nil
       onChange?()
     } catch { report(error) }
@@ -107,6 +170,7 @@ final class TaskStore {
   private func perform(_ change: () throws -> Void) {
     do {
       try change()
+      reviewUndo = nil
       reload()
     } catch { report(error) }
   }

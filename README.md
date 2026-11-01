@@ -1,13 +1,14 @@
 # Seven Day Todo
 
-A small, local-first macOS to-do app that shows the three previous days, today,
-and the next three days in one window.
+A small, local-first macOS to-do app that shows yesterday, today,
+tomorrow, and the day after tomorrow in one window, with a calendar month overview.
 
 ## Current features
 
-- Seven day cards centered on today, with one-day navigation and a Today reset
-- Floating editor for task titles, long notes, dates, and completion
-- Live Markdown formatting in Notes plus a rendered preview; the editable raw Markdown remains saved
+- Four day cards from yesterday through the day after tomorrow, with one-day navigation and a Today reset
+- A Default / Month switch with a full month grid, month navigation, and editable tasks on each date
+- Calendar-style popover for task titles, long notes, dates, and completion; click outside to save and dismiss
+- One Notes field with Markdown rendered by default; the line at the insertion cursor reveals its source, and raw Markdown remains saved
 - Drag tasks between visible days or within a day to reorder them
 - Soft-delete tasks with the trash button
 - Local JSON persistence in Application Support
@@ -37,15 +38,23 @@ Run the local persistence checks after building the app with:
 "dist/Seven Day Todo.app/Contents/MacOS/SevenDayTodo" --self-test
 ```
 
+Run the isolated AppKit popover regression checks with:
+
+```sh
+"dist/Seven Day Todo.app/Contents/MacOS/SevenDayTodo" --ui-self-test
+```
+
+These checks open a temporary window and use disposable task storage. They exercise
+creating, cancelling, and closing popovers in Default and Month views.
+
 ## Architecture
 
-`BoardViewController` and `TaskEditorPanel` render AppKit controls and call `TaskStore`.
+`BoardViewController` and `TaskEditorPopover` render AppKit controls and call `TaskStore`.
 The store owns the visible date range, editor draft, selected task, and errors.
 `MarkdownCompiler` parses note lines, and `MarkdownLivePreview` applies formatting
-without replacing the underlying text. `MarkdownHTMLRenderer` supplies the rendered
-preview. The Markdown Guide's basic headings, bold, italic, blockquotes, ordered and
-unordered lists, inline code, horizontal rules, links, and images are supported.
-The preview also handles paragraphs, hard line breaks, setext headings, and code blocks.
+without replacing the underlying text. Only the line at the insertion cursor shows
+Markdown source; the rest stays formatted. Headings, emphasis, blockquotes, lists,
+inline code, links, and fenced code are styled in the same Notes field.
 It depends on the `TaskRepository` interface.
 `LocalTaskRepository` implements it; `JSONFileTaskStorage` handles JSON encoding, migration,
 and atomic file writes through `TaskPersistence`. The repository only updates its

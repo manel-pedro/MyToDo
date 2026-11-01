@@ -5,6 +5,7 @@ enum SelfTest {
   enum Failure: Error { case assertion(String) }
 
   static func run() throws {
+    try verifyUnfinishedTasks()
     try verifyMarkdownCompiler()
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -74,10 +75,12 @@ enum SelfTest {
     store.returnToToday(now: today)
     let original = store.days.map { DayKey.value(for: $0) }
     try require(
-      original.count == 7 && original[0] == "2026-09-21" && original[6] == "2026-09-27",
-      "default range should center on today")
+      original == ["2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26"],
+      "default range should show yesterday through the day after tomorrow")
     store.shiftDays(-1)
-    try require(DayKey.value(for: store.days[0]) == "2026-09-20", "previous should shift one day")
+    try require(
+      store.days.map { DayKey.value(for: $0) } == ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25"],
+      "previous should shift the four-day range by one day")
     store.shiftDays(1)
     try require(store.days.map { DayKey.value(for: $0) } == original, "next should shift one day")
     store.shiftDays(5)
@@ -85,6 +88,36 @@ enum SelfTest {
     try require(
       store.days.map { DayKey.value(for: $0) } == original,
       "today should restore default range")
+
+    store.setViewMode(.month)
+    try require(store.days.count % 7 == 0, "month should contain complete weeks")
+    try require(
+      Calendar.current.component(.weekday, from: store.days[0]) == Calendar.current.firstWeekday,
+      "month should respect the calendar's first weekday")
+    let september = store.days.filter {
+      Calendar.current.isDate($0, equalTo: today, toGranularity: .month)
+    }
+    try require(september.count == 30, "month should include every September date")
+    try require(store.items(for: today).contains { $0.id == a.id }, "month should load tasks")
+    store.shiftDays(1)
+    try require(Calendar.current.component(.month, from: store.focusedDate) == 10,
+      "month next should advance a full month")
+    store.shiftDays(-1)
+    store.setViewMode(.days)
+    try require(store.days.map { DayKey.value(for: $0) } == original,
+      "switching views should retain the focused date")
+    store.returnToToday(now: date(2028, 2, 15))
+    store.setViewMode(.month)
+    try require(store.days.filter {
+      Calendar.current.component(.month, from: $0) == 2
+    }.count == 29, "leap February should include 29 dates")
+    store.returnToToday(now: date(2026, 12, 15))
+    store.shiftDays(1)
+    try require(DayKey.value(for: store.focusedDate) == "2027-01-15",
+      "month navigation should cross the year boundary")
+    store.returnToToday(now: today)
+    try require(store.viewMode == .month, "Today should keep the selected view")
+    store.setViewMode(.days)
 
     let distant = "2027-02-12"
     _ = try reopened.create(title: "Outside range", notes: "", dayKey: distant, isCompleted: false)
@@ -106,6 +139,64 @@ enum SelfTest {
     try require(
       try isolated.tasks(dayKeys: [firstDay]).first?.notes == "Original",
       "failed save should leave repository state unchanged")
+  }
+
+  private static func verifyUnfinishedTasks() throws {
+    let storage = FailingTaskPersistence()
+    let repository = try LocalTaskRepository(storage: storage)
+    let calendar = Calendar.current
+    let today = calendar.startOfDay(for: .now)
+    let yesterday = DayKey.value(for: calendar.date(byAdding: .day, value: -1, to: today)!)
+    let older = DayKey.value(for: calendar.date(byAdding: .day, value: -30, to: today)!)
+    let tomorrow = DayKey.value(for: calendar.date(byAdding: .day, value: 1, to: today)!)
+    let todayKey = DayKey.value(for: today)
+    let oldTask = try repository.create(title: "Older", notes: "Keep these notes", dayKey: older, isCompleted: false)
+    let recent = try repository.create(title: "Recent", notes: "Recent notes", dayKey: yesterday, isCompleted: false)
+    let sibling = try repository.create(title: "Same day", notes: "", dayKey: yesterday, isCompleted: false)
+    _ = try repository.create(title: "Done", notes: "", dayKey: yesterday, isCompleted: true)
+    _ = try repository.create(title: "Today", notes: "", dayKey: todayKey, isCompleted: false)
+    _ = try repository.create(title: "Future", notes: "", dayKey: tomorrow, isCompleted: false)
+    let deleted = try repository.create(title: "Deleted", notes: "", dayKey: older, isCompleted: false)
+    try repository.delete(id: deleted.id)
+    try require(try repository.unfinishedTasks(before: todayKey).map(\.id) == [recent.id, sibling.id, oldTask.id],
+      "review should exclude today, future, completed and deleted tasks, and sort newest day first")
+    let store = TaskStore(repository: repository)
+    store.shiftDays(100)
+    try require(store.unfinishedItems.map(\.id) == [recent.id, sibling.id, oldTask.id],
+      "review should include all earlier days independently of the visible range")
+    try require(store.applyReviewPlan([
+      TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
+      TaskPlanUpdate(id: oldTask.id, dayKey: older, isCompleted: true),
+    ]), "review should apply rescheduling and completion together")
+    try require(store.unfinishedItems.map(\.id) == [sibling.id], "review should retain tasks left for later")
+    let moved = try repository.tasks(dayKeys: [tomorrow]).filter { $0.id == recent.id }
+    try require(moved.count == 1 && moved[0].notes == recent.notes,
+      "rescheduling should preserve task identity and notes without creating duplicates")
+    let reopened = try LocalTaskRepository(storage: storage)
+    try require(try reopened.unfinishedTasks(before: todayKey).map(\.id) == [sibling.id],
+      "review changes should persist when reopening storage")
+    try require(store.canUndoReview, "a successful review should offer Undo")
+    store.undoReviewPlan()
+    try require(store.unfinishedItems.map(\.id) == [recent.id, sibling.id, oldTask.id],
+      "Undo should restore dates, completion and original within-day order")
+    try require(!store.canUndoReview, "Undo should be consumed after restoration")
+    do {
+      try repository.applyPlan([
+        TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
+        TaskPlanUpdate(id: UUID(), dayKey: tomorrow, isCompleted: true),
+      ])
+      throw Failure.assertion("invalid review item should fail the entire plan")
+    } catch TaskError.missingTask {}
+    try require(try repository.unfinishedTasks(before: todayKey).map(\.id) == [recent.id, sibling.id, oldTask.id],
+      "an invalid item should not partially apply the plan")
+    storage.shouldFail = true
+    try require(!store.applyReviewPlan([
+      TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
+      TaskPlanUpdate(id: oldTask.id, dayKey: older, isCompleted: true),
+    ]), "storage failure should not report a successful review")
+    try require(try repository.unfinishedTasks(before: todayKey).map(\.id) == [recent.id, sibling.id, oldTask.id],
+      "failed persistence should leave the entire plan unchanged")
+    try require(!store.canUndoReview, "a failed plan should not create an Undo entry")
   }
 
   private static func verifyMarkdownCompiler() throws {
