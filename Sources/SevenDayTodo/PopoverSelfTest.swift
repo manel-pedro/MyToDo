@@ -93,7 +93,88 @@ enum PopoverSelfTest {
 
       }
     }
+    try checkUnfinishedEditing(board: board, store: store)
     print("24 editor and 24 review popover cycles passed: Cancel, Create, transient close; Default and Month views")
+  }
+
+  private static func checkUnfinishedEditing(board: BoardViewController, store: TaskStore) throws {
+    let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: .now)!
+    store.beginNewTask(on: yesterday)
+    store.setDraft(title: "Unfinished edit regression", notes: "Original", date: yesterday, isCompleted: false)
+    try require(store.saveDraft(), "could not seed unfinished task")
+
+    for mode in [TaskStore.ViewMode.days, .month] {
+      store.setViewMode(mode)
+      board.view.layoutSubtreeIfNeeded()
+      guard let reviewButton = descendants(board.view).compactMap({ $0 as? NSButton })
+        .first(where: { $0.title.hasPrefix("Unfinished tasks") }) else {
+        throw SelfTest.Failure.assertion("missing unfinished tasks button")
+      }
+      reviewButton.performClick(nil)
+      pump()
+      guard let review = board.unfinishedPopover, let reviewContent = review.contentViewController?.view,
+        let row = descendants(reviewContent).compactMap({ $0 as? TaskRowView }).first else {
+        throw SelfTest.Failure.assertion("missing unfinished task row")
+      }
+      row.onOpen?()
+      pump()
+      guard let editor = board.editor, let content = editor.contentViewController?.view else {
+        throw SelfTest.Failure.assertion("unfinished task editor did not open")
+      }
+      try require(review.isShown && editor.isShown, "editing must keep unfinished tasks open")
+      try click(in: reviewContent)
+      try require(review.isShown && editor.isShown, "clicking review must keep both popovers open")
+      try click(in: content)
+      try require(review.isShown && editor.isShown, "clicking editor must keep both popovers open")
+      content.window?.makeFirstResponder(nil)
+      descendants(content).compactMap { $0 as? NSTextField }
+        .first { $0.placeholderString == "Task title" }?.stringValue = "Edited unfinished task"
+      try click(in: board.view)
+      try require(!review.isShown && !editor.isShown, "outside click must close both popovers")
+      try require(board.unfinishedPopover == nil && board.editor == nil && store.draft == nil,
+        "outside click must clean up both popovers")
+      try require(store.unfinishedItems.contains { $0.title == "Edited unfinished task" },
+        "outside click must save the unfinished task edit")
+
+      reviewButton.performClick(nil)
+      pump()
+      guard let reopened = board.unfinishedPopover,
+        let reopenedContent = reopened.contentViewController?.view,
+        let reopenedRow = descendants(reopenedContent).compactMap({ $0 as? TaskRowView }).first else {
+        throw SelfTest.Failure.assertion("could not reopen unfinished tasks")
+      }
+      reopenedRow.onOpen?()
+      pump()
+      guard let reopenedEditor = board.editor, let reopenedEditorContent = reopenedEditor.contentViewController?.view else {
+        throw SelfTest.Failure.assertion("could not reopen unfinished editor")
+      }
+      try button("Save", in: reopenedEditorContent).performClick(nil)
+      pump()
+      try require(reopened.isShown && board.editor == nil, "saving must leave unfinished tasks open")
+      reopenedRow.onOpen?()
+      pump()
+      guard let cancelledContent = board.editor?.contentViewController?.view else {
+        throw SelfTest.Failure.assertion("could not open editor for cancel")
+      }
+      try button("Cancel", in: cancelledContent).performClick(nil)
+      pump()
+      try require(reopened.isShown && board.editor == nil, "cancelling must leave unfinished tasks open")
+      try click(in: board.view)
+      try require(board.unfinishedPopover == nil, "outside click must also close review alone")
+    }
+    print("Unfinished task editing passed in Default and Month views: both stay open, outside click saves and closes both, Save/Cancel preserve review")
+  }
+
+  private static func click(in view: NSView) throws {
+    guard let window = view.window,
+      let event = NSEvent.mouseEvent(with: .leftMouseDown,
+        location: view.convert(NSPoint(x: 3, y: 3), to: nil), modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else {
+      throw SelfTest.Failure.assertion("could not create click event")
+    }
+    NSApp.sendEvent(event)
+    pump()
   }
 
   private static func descendants(_ view: NSView) -> [NSView] {

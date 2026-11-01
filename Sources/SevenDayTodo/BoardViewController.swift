@@ -14,6 +14,7 @@ final class BoardViewController: NSViewController {
   private var showedStartupReview = false
   private var unfinishedDragSource: TaskRowView?
   private(set) var editor: TaskEditorPopover?
+  private var popoverClickMonitors: [Any] = []
   private var needsRenderAfterEditing = false
   private var shownError: String?
 
@@ -89,7 +90,7 @@ final class BoardViewController: NSViewController {
 
   @objc private func toggleUnfinishedTasks() {
     if let unfinishedPopover, unfinishedPopover.isShown {
-      unfinishedPopover.performClose(nil)
+      closeUnfinishedTasks()
     } else {
       store.reload()
       showUnfinishedTasks()
@@ -99,6 +100,7 @@ final class BoardViewController: NSViewController {
   private func showUnfinishedTasks() {
     editor?.dismiss()
     let popover = UnfinishedTasksPopover(store: store)
+    popover.behavior = .applicationDefined
     popover.onBeginTaskDrag = { [weak self, weak popover] row in
       guard let self else { return }
       // Keep the native drag source alive after its popover closes.
@@ -107,16 +109,64 @@ final class BoardViewController: NSViewController {
       // Let AppKit finish starting the drag before revealing the day cards.
       DispatchQueue.main.async { [weak popover] in popover?.close() }
     }
-    popover.onOpenTask = { [weak self] item in
-      guard let self, let date = DayKey.date(for: item.dayKey) else { return }
-      self.openEditor(item: item, on: date, anchor: self.unfinishedButton)
+    popover.onOpenTask = { [weak self, weak popover] item in
+      guard let self, let date = DayKey.date(for: item.dayKey),
+        let anchor = popover?.contentViewController?.view else { return }
+      // Anchor to the stable content view, since saving rebuilds the task rows.
+      self.openEditor(item: item, on: date, anchor: anchor, fromUnfinished: true)
     }
     popover.onClose = { [weak self, weak popover] in
       guard let self, self.unfinishedPopover === popover else { return }
+      if self.editor?.behavior == .applicationDefined { self.editor?.performClose(nil) }
       self.unfinishedPopover = nil
+      self.popoverClickMonitors.forEach { NSEvent.removeMonitor($0) }
+      self.popoverClickMonitors.removeAll()
     }
     unfinishedPopover = popover
     popover.show(relativeTo: unfinishedButton.bounds, of: unfinishedButton, preferredEdge: .minY)
+    monitorUnfinishedTaskClicks()
+  }
+
+  private func closeUnfinishedTasks() {
+    // Use the editor's normal close request so outside clicks still save changes.
+    if let editor, editor.behavior == .applicationDefined {
+      editor.performClose(nil)
+      guard !editor.isShown else { return }
+    }
+    unfinishedPopover?.performClose(nil)
+  }
+
+  private func monitorUnfinishedTaskClicks() {
+    guard popoverClickMonitors.isEmpty else { return }
+    let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    if let monitor = NSEvent.addLocalMonitorForEvents(matching: clicks, handler: { [weak self] event in
+      guard let self else { return event }
+      // Include child windows (for example, controls' auxiliary windows).
+      var window = event.window
+      while let candidate = window {
+        if candidate === self.unfinishedPopover?.contentViewController?.view.window
+          || candidate === self.editor?.contentViewController?.view.window { return event }
+        window = candidate.parent
+      }
+      // Menus and utility panels belong to the controls being used in a popover.
+      if event.window?.level == .popUpMenu
+        || (event.window as? NSPanel)?.becomesKeyOnlyIfNeeded == true { return event }
+      // Let the button's action close the group without reopening it on mouse-up.
+      if event.window === self.unfinishedButton.window,
+        self.unfinishedButton.bounds.contains(self.unfinishedButton.convert(event.locationInWindow, from: nil)) {
+        return event
+      }
+      self.closeUnfinishedTasks()
+      return event
+    }) { popoverClickMonitors.append(monitor) }
+    if let monitor = NSEvent.addGlobalMonitorForEvents(matching: clicks, handler: { [weak self] _ in
+      Task { @MainActor [weak self] in self?.closeUnfinishedTasks() }
+    }) { popoverClickMonitors.append(monitor) }
+  }
+
+  override func viewWillDisappear() {
+    closeUnfinishedTasks()
+    super.viewWillDisappear()
   }
 
   private func renderDays() {
@@ -221,11 +271,12 @@ final class BoardViewController: NSViewController {
     store.setViewMode(viewMode.selectedSegment == 1 ? .month : .days)
   }
 
-  private func openEditor(item: TodoItem?, on date: Date, anchor: NSView) {
-    unfinishedPopover?.close()
+  private func openEditor(item: TodoItem?, on date: Date, anchor: NSView, fromUnfinished: Bool = false) {
+    if !fromUnfinished { closeUnfinishedTasks() }
     editor?.dismiss()
     if let item { store.beginEditing(item) } else { store.beginNewTask(on: date) }
     let popover = TaskEditorPopover(store: store)
+    if fromUnfinished { popover.behavior = .applicationDefined }
     popover.onClose = { [weak self, weak popover] in
       guard let self, self.editor === popover else { return }
       self.editor = nil

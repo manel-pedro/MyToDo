@@ -7,22 +7,25 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
   private var hasFinishedEditing = false
   private var isSaving = false
   private let titleField = NSTextField()
-  private let notesView = NSTextView()
+  private let notesView = EditorNotesView()
   private var markdownPreview: MarkdownLivePreview?
+  private var notesHeight: NSLayoutConstraint!
   private let datePicker = NSDatePicker()
   private let completed = NSButton(checkboxWithTitle: "Completed", target: nil, action: nil)
+  private let compactNotes = true
+  private let showsSaveButton = true
 
   init(store: TaskStore) {
     self.store = store
     super.init()
     behavior = .transient
-    // Avoid AppKit window-transform animation teardown during dismissal.
+    // Keep dismissal immediate and avoid AppKit window-transform teardown issues.
     animates = false
     delegate = self
     contentViewController = NSViewController()
     buildView()
-    contentSize = NSSize(width: 450, height: 550)
     loadDraft()
+    updatePreferredSize()
   }
 
   @available(*, unavailable)
@@ -33,93 +36,150 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
   }
 
   func dismiss() {
-    if isShown {
-      close()
-    } else {
-      finishEditing()
-    }
+    if isShown { close() } else { finishEditing() }
   }
 
   private func buildView() {
-    let content = NSView(frame: NSRect(x: 0, y: 0, width: 450, height: 550))
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 300))
     contentViewController?.view = content
     titleField.placeholderString = "Task title"
+    titleField.font = .systemFont(ofSize: 21, weight: .medium)
+    titleField.isBordered = false
+    titleField.isBezeled = false
+    titleField.drawsBackground = false
+    titleField.focusRingType = .none
+    titleField.setAccessibilityLabel("Task title")
+
+    let accent = NSView()
+    accent.wantsLayer = true
+    accent.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+    accent.layer?.cornerRadius = 2
+    let titleRow = NSStackView(views: [accent, titleField])
+    titleRow.alignment = .centerY
+    titleRow.spacing = 10
+    accent.widthAnchor.constraint(equalToConstant: 4).isActive = true
+    accent.heightAnchor.constraint(equalToConstant: 28).isActive = true
+    titleField.heightAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
 
     datePicker.datePickerStyle = .textFieldAndStepper
     datePicker.datePickerElements = [.yearMonthDay]
-    let dateRow = NSStackView(views: [NSTextField(labelWithString: "Date"), datePicker, completed])
-    dateRow.orientation = .horizontal
-    dateRow.spacing = 12
+    datePicker.isBordered = false
+    datePicker.isBezeled = false
+    datePicker.drawsBackground = false
+    datePicker.font = .systemFont(ofSize: 13)
+    datePicker.setAccessibilityLabel("Scheduled date")
+    completed.font = .systemFont(ofSize: 13)
+    let dateRow = propertyRow(symbol: "calendar", label: "Date", control: datePicker)
+    let statusRow = propertyRow(symbol: "checkmark.circle", label: "Status", control: completed)
 
-    let notesScroll = textScroll(for: notesView)
+    let notesScroll = textScroll()
+    let notesIcon = symbol("note.text")
+    let notesRow = NSStackView(views: [notesIcon, notesScroll])
+    notesRow.alignment = .top
+    notesRow.spacing = 10
+    notesHeight = notesScroll.heightAnchor.constraint(equalToConstant: 74)
+    notesHeight.isActive = true
     markdownPreview = MarkdownLivePreview(textView: notesView)
+    markdownPreview?.onChange = { [weak self] in self?.updatePreferredSize() }
+
     let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelAction))
-    let save = NSButton(
-      title: store.selectedTask == nil ? "Create" : "Save", target: self,
-      action: #selector(saveAction))
+    let save = NSButton(title: store.selectedTask == nil ? "Create" : "Save", target: self,
+                        action: #selector(saveAction))
+    save.bezelStyle = .rounded
+    save.keyEquivalent = "\r"
+    save.keyEquivalentModifierMask = .command
     let spacer = NSView()
     spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    let actions = NSStackView(views: [spacer, cancel, save])
-    actions.orientation = .horizontal
+    let actions = NSStackView(views: showsSaveButton ? [spacer, cancel, save] : [spacer, cancel])
     actions.spacing = 8
 
-    let stack = NSStackView(views: [
-      section("Title"), titleField,
-      section("Notes"), notesScroll,
-      dateRow,
-      actions,
-    ])
+    let stack = NSStackView(views: [titleRow, separator(), dateRow, statusRow, separator(), notesRow, actions])
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 8
+    stack.spacing = 10
     stack.translatesAutoresizingMaskIntoConstraints = false
     content.addSubview(stack)
     NSLayoutConstraint.activate([
       stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
       stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
-      stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+      stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
       stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-      titleField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      notesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
+      titleRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      dateRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      statusRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      notesRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
       actions.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
   }
 
-  private func section(_ title: String) -> NSTextField {
-    let label = NSTextField(labelWithString: title)
-    label.font = .systemFont(ofSize: 12, weight: .semibold)
-    return label
+  private func symbol(_ name: String) -> NSImageView {
+    let image = NSImageView(image: NSImage(systemSymbolName: name, accessibilityDescription: nil)!)
+    image.contentTintColor = .secondaryLabelColor
+    image.imageScaling = .scaleProportionallyDown
+    image.widthAnchor.constraint(equalToConstant: 16).isActive = true
+    image.heightAnchor.constraint(equalToConstant: 20).isActive = true
+    return image
   }
 
-  private func textScroll(for textView: NSTextView) -> NSScrollView {
+  private func propertyRow(symbol name: String, label: String, control: NSView) -> NSStackView {
+    let caption = NSTextField(labelWithString: label)
+    caption.font = .systemFont(ofSize: 12)
+    caption.textColor = .secondaryLabelColor
+    caption.widthAnchor.constraint(equalToConstant: 54).isActive = true
+    let spacer = NSView()
+    spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    let row = NSStackView(views: [symbol(name), caption, control, spacer])
+    row.alignment = .centerY
+    row.spacing = 10
+    row.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
+    return row
+  }
+
+  private func separator() -> NSBox {
+    let separator = NSBox()
+    separator.boxType = .separator
+    return separator
+  }
+
+  private func textScroll() -> NSScrollView {
     let scroll = NSScrollView()
     scroll.hasVerticalScroller = true
-    scroll.borderType = .bezelBorder
-    scroll.drawsBackground = true
-    textView.frame = NSRect(x: 0, y: 0, width: 400, height: 270)
-    textView.minSize = NSSize(width: 0, height: 270)
-    textView.maxSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude,
-      height: CGFloat.greatestFiniteMagnitude)
-    textView.isVerticallyResizable = true
-    textView.isHorizontallyResizable = false
-    textView.isEditable = true
-    textView.isSelectable = true
-    textView.isRichText = true
-    textView.importsGraphics = false
-    textView.allowsUndo = true
-    textView.isAutomaticQuoteSubstitutionEnabled = false
-    textView.isAutomaticDashSubstitutionEnabled = false
-    textView.font = .systemFont(ofSize: 12)
-    textView.textContainerInset = NSSize(width: 5, height: 5)
-    textView.autoresizingMask = [.width]
-    textView.textContainer?.widthTracksTextView = true
-    textView.textContainer?.containerSize = NSSize(
-      width: 400,
-      height: CGFloat.greatestFiniteMagnitude)
-    scroll.documentView = textView
+    scroll.autohidesScrollers = true
+    scroll.borderType = .noBorder
+    scroll.drawsBackground = false
+    notesView.frame = NSRect(x: 0, y: 0, width: 318, height: 74)
+    notesView.minSize = .zero
+    notesView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    notesView.isVerticallyResizable = true
+    notesView.isHorizontallyResizable = false
+    notesView.isEditable = true
+    notesView.isSelectable = true
+    notesView.isRichText = true
+    notesView.importsGraphics = false
+    notesView.allowsUndo = true
+    notesView.drawsBackground = false
+    notesView.isAutomaticQuoteSubstitutionEnabled = false
+    notesView.isAutomaticDashSubstitutionEnabled = false
+    notesView.font = .systemFont(ofSize: 13)
+    notesView.textContainerInset = NSSize(width: 0, height: 5)
+    notesView.autoresizingMask = [.width]
+    notesView.textContainer?.widthTracksTextView = true
+    notesView.textContainer?.containerSize = NSSize(width: 318, height: CGFloat.greatestFiniteMagnitude)
+    notesView.setAccessibilityLabel("Notes")
+    scroll.documentView = notesView
     return scroll
+  }
+
+  private func updatePreferredSize() {
+    contentViewController?.view.layoutSubtreeIfNeeded()
+    var height: CGFloat = 260
+    if compactNotes, let container = notesView.textContainer, let layout = notesView.layoutManager {
+      layout.ensureLayout(for: container)
+      height = min(260, max(74, ceil(layout.usedRect(for: container).height) + 16))
+    }
+    notesHeight.constant = height
+    contentSize = NSSize(width: 380, height: 218 + height)
+    notesView.needsDisplay = true
   }
 
   private func loadDraft() {
@@ -132,9 +192,10 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
   }
 
   private func captureDraft() {
-    store.setDraft(
-      title: titleField.stringValue, notes: notesView.string,
-      date: datePicker.dateValue, isCompleted: completed.state == .on)
+    // Commit the active title/date field editor before reading the controls.
+    contentViewController?.view.window?.makeFirstResponder(nil)
+    store.setDraft(title: titleField.stringValue, notes: notesView.string,
+                   date: datePicker.dateValue, isCompleted: completed.state == .on)
   }
 
   @objc private func saveAction() {
@@ -153,10 +214,9 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
 
   func popoverShouldClose(_ popover: NSPopover) -> Bool {
     if hasFinishedEditing || store.draft == nil { return true }
-    if titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      // Dismiss an empty new task without creating it; validate existing tasks.
-      if store.selectedTask == nil { return true }
-    }
+    contentViewController?.view.window?.makeFirstResponder(nil)
+    if titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      store.selectedTask == nil { return true }
     return saveChanges()
   }
 
@@ -164,14 +224,24 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
     contentViewController?.view.window?.makeFirstResponder(titleField)
   }
 
-  func popoverDidClose(_ notification: Notification) {
-    finishEditing()
-  }
+  func popoverDidClose(_ notification: Notification) { finishEditing() }
 
   private func finishEditing() {
     guard !hasFinishedEditing else { return }
     hasFinishedEditing = true
     store.closeEditor()
     onClose?()
+  }
+}
+
+@MainActor
+private final class EditorNotesView: NSTextView {
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    guard string.isEmpty else { return }
+    let placeholder = NSAttributedString(string: "Add notes", attributes: [
+      .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.placeholderTextColor,
+    ])
+    placeholder.draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height))
   }
 }
