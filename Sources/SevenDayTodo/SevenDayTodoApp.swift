@@ -90,6 +90,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // Set the running Dock tile explicitly; Launch Services can resolve the bundle
+    // icon while a programmatically created NSApplication still uses its fallback.
+    if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+      let icon = NSImage(contentsOf: iconURL) {
+      NSApp.applicationIconImage = icon
+    }
+
     do {
       let store = TaskStore(repository: try LocalTaskRepository())
       self.store = store
