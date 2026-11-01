@@ -7,7 +7,7 @@ tomorrow, and the day after tomorrow in one window, with a calendar month overvi
 
 - Four day cards from yesterday through the day after tomorrow, with one-day navigation and a Today reset
 - A Default / Month switch with a full month grid, month navigation, and editable tasks on each date
-- Calendar-style popover for task titles, long notes, dates, and completion; click outside to save and dismiss
+- Compact Calendar-style popover with a prominent title, date and completion rows, and Notes that expand as you write; click outside to save, or Cancel to discard
 - One Notes field with Markdown rendered by default; the line at the insertion cursor reveals its source, and raw Markdown remains saved
 - Drag tasks between visible days or within a day to reorder them
 - Soft-delete tasks with the trash button

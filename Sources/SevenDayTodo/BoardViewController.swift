@@ -98,7 +98,7 @@ final class BoardViewController: NSViewController {
   }
 
   private func showUnfinishedTasks() {
-    editor?.dismiss()
+    guard closeActiveEditor() else { return }
     let popover = UnfinishedTasksPopover(store: store)
     popover.behavior = .applicationDefined
     popover.onBeginTaskDrag = { [weak self, weak popover] row in
@@ -127,13 +127,21 @@ final class BoardViewController: NSViewController {
     monitorUnfinishedTaskClicks()
   }
 
-  private func closeUnfinishedTasks() {
+  @discardableResult
+  private func closeActiveEditor() -> Bool {
+    guard let editor else { return true }
+    editor.performClose(nil)
+    return !editor.isShown
+  }
+
+  @discardableResult
+  private func closeUnfinishedTasks() -> Bool {
     // Use the editor's normal close request so outside clicks still save changes.
     if let editor, editor.behavior == .applicationDefined {
-      editor.performClose(nil)
-      guard !editor.isShown else { return }
+      guard closeActiveEditor() else { return false }
     }
     unfinishedPopover?.performClose(nil)
+    return unfinishedPopover == nil
   }
 
   private func monitorUnfinishedTaskClicks() {
@@ -144,8 +152,11 @@ final class BoardViewController: NSViewController {
       // Include child windows (for example, controls' auxiliary windows).
       var window = event.window
       while let candidate = window {
-        if candidate === self.unfinishedPopover?.contentViewController?.view.window
-          || candidate === self.editor?.contentViewController?.view.window { return event }
+        if candidate === self.editor?.contentViewController?.view.window { return event }
+        if candidate === self.unfinishedPopover?.contentViewController?.view.window {
+          // Returning to the list saves and dismisses only its child editor.
+          return self.closeActiveEditor() ? event : nil
+        }
         window = candidate.parent
       }
       // Menus and utility panels belong to the controls being used in a popover.
@@ -272,9 +283,13 @@ final class BoardViewController: NSViewController {
   }
 
   private func openEditor(item: TodoItem?, on date: Date, anchor: NSView, fromUnfinished: Bool = false) {
-    if !fromUnfinished { closeUnfinishedTasks() }
-    editor?.dismiss()
-    if let item { store.beginEditing(item) } else { store.beginNewTask(on: date) }
+    if !fromUnfinished, !closeUnfinishedTasks() { return }
+    guard closeActiveEditor() else { return }
+    if let item {
+      // Closing the previous editor may have just updated this same task.
+      guard let current = (store.items + store.unfinishedItems).first(where: { $0.id == item.id }) else { return }
+      store.beginEditing(current)
+    } else { store.beginNewTask(on: date) }
     let popover = TaskEditorPopover(store: store)
     if fromUnfinished { popover.behavior = .applicationDefined }
     popover.onClose = { [weak self, weak popover] in
@@ -468,7 +483,7 @@ final class TaskRowView: NSView, NSDraggingSource {
       target: self, action: #selector(deleteTask))
     delete.isBordered = false
     delete.contentTintColor = .tertiaryLabelColor
-    let stack = NSStackView(views: compact ? [checkbox, label] : [checkbox, label, delete])
+    let stack = NSStackView(views: compact ? [checkbox, label] : [delete, checkbox, label])
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.spacing = 4
     addSubview(stack)

@@ -12,8 +12,6 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
   private var notesHeight: NSLayoutConstraint!
   private let datePicker = NSDatePicker()
   private let completed = NSButton(checkboxWithTitle: "Completed", target: nil, action: nil)
-  private let compactNotes = true
-  private let showsSaveButton = true
 
   init(store: TaskStore) {
     self.store = store
@@ -83,14 +81,9 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
     markdownPreview?.onChange = { [weak self] in self?.updatePreferredSize() }
 
     let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelAction))
-    let save = NSButton(title: store.selectedTask == nil ? "Create" : "Save", target: self,
-                        action: #selector(saveAction))
-    save.bezelStyle = .rounded
-    save.keyEquivalent = "\r"
-    save.keyEquivalentModifierMask = .command
     let spacer = NSView()
     spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    let actions = NSStackView(views: showsSaveButton ? [spacer, cancel, save] : [spacer, cancel])
+    let actions = NSStackView(views: [spacer, cancel])
     actions.spacing = 8
 
     let stack = NSStackView(views: [titleRow, separator(), dateRow, statusRow, separator(), notesRow, actions])
@@ -99,6 +92,9 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
     stack.spacing = 10
     stack.translatesAutoresizingMaskIntoConstraints = false
     content.addSubview(stack)
+    for divider in stack.arrangedSubviews.compactMap({ $0 as? NSBox }) {
+      divider.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    }
     NSLayoutConstraint.activate([
       stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
       stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
@@ -173,7 +169,7 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
   private func updatePreferredSize() {
     contentViewController?.view.layoutSubtreeIfNeeded()
     var height: CGFloat = 260
-    if compactNotes, let container = notesView.textContainer, let layout = notesView.layoutManager {
+    if let container = notesView.textContainer, let layout = notesView.layoutManager {
       layout.ensureLayout(for: container)
       height = min(260, max(74, ceil(layout.usedRect(for: container).height) + 16))
     }
@@ -196,10 +192,6 @@ final class TaskEditorPopover: NSPopover, NSPopoverDelegate {
     contentViewController?.view.window?.makeFirstResponder(nil)
     store.setDraft(title: titleField.stringValue, notes: notesView.string,
                    date: datePicker.dateValue, isCompleted: completed.state == .on)
-  }
-
-  @objc private func saveAction() {
-    if saveChanges() { dismiss() }
   }
 
   @objc private func cancelAction() { dismiss() }

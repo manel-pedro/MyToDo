@@ -47,19 +47,27 @@ enum PopoverSelfTest {
           content.window?.makeFirstResponder(nil)
           let fields = descendants(content).compactMap { $0 as? NSTextField }
           fields.first { $0.placeholderString == "Task title" }?.stringValue = "UI test \(iteration)"
-          descendants(content).compactMap { $0 as? NSTextView }.first(where: { !$0.isFieldEditor })?.string = "# Heading\n**Note**"
+          guard let notes = descendants(content).compactMap({ $0 as? NSTextView })
+            .first(where: { !$0.isFieldEditor }) else {
+            throw SelfTest.Failure.assertion("missing notes field")
+          }
+          if iteration == 1 {
+            let compactHeight = editor.contentSize.height
+            notes.string = Array(repeating: "A line of notes", count: 24).joined(separator: "\n")
+            notes.didChangeText()
+            try require(editor.contentSize.height > compactHeight && editor.contentSize.height <= 480,
+              "Notes should expand as text grows and remain bounded for scrolling")
+          }
+          notes.string = "# Heading\n**Note**"
+          notes.didChangeText()
           var anchorPreserved = true
           let onChange = store.onChange
           store.onChange = {
             onChange?()
             if editor.isShown && add.window == nil { anchorPreserved = false }
           }
-          if iteration.isMultiple(of: 2) {
-            // The transient popover's click-outside/close-request path.
-            editor.performClose(nil)
-          } else {
-            try button("Create", in: content).performClick(nil)
-          }
+          // The editor saves through its outside-click/close-request path.
+          editor.performClose(nil)
           store.onChange = onChange
           try require(anchorPreserved, "saving removed the anchor while editor was visible")
         }
@@ -94,7 +102,7 @@ enum PopoverSelfTest {
       }
     }
     try checkUnfinishedEditing(board: board, store: store)
-    print("24 editor and 24 review popover cycles passed: Cancel, Create, transient close; Default and Month views")
+    print("24 editor and 24 review popover cycles passed: Cancel, autosave, transient close; Default and Month views")
   }
 
   private static func checkUnfinishedEditing(board: BoardViewController, store: TaskStore) throws {
@@ -122,15 +130,26 @@ enum PopoverSelfTest {
         throw SelfTest.Failure.assertion("unfinished task editor did not open")
       }
       try require(review.isShown && editor.isShown, "editing must keep unfinished tasks open")
-      try click(in: reviewContent)
-      try require(review.isShown && editor.isShown, "clicking review must keep both popovers open")
       try click(in: content)
       try require(review.isShown && editor.isShown, "clicking editor must keep both popovers open")
       content.window?.makeFirstResponder(nil)
       descendants(content).compactMap { $0 as? NSTextField }
         .first { $0.placeholderString == "Task title" }?.stringValue = "Edited unfinished task"
+      try click(in: reviewContent)
+      try require(review.isShown && !editor.isShown && board.editor == nil,
+        "clicking review must save and close only the editor")
+      try require(store.unfinishedItems.contains { $0.title == "Edited unfinished task" },
+        "returning to the list must save edits")
+      guard let currentRow = descendants(reviewContent).compactMap({ $0 as? TaskRowView }).first else {
+        throw SelfTest.Failure.assertion("missing updated unfinished task row")
+      }
+      currentRow.onOpen?()
+      pump()
+      guard let outsideEditor = board.editor else {
+        throw SelfTest.Failure.assertion("could not reopen editor after returning to list")
+      }
       try click(in: board.view)
-      try require(!review.isShown && !editor.isShown, "outside click must close both popovers")
+      try require(!review.isShown && !outsideEditor.isShown, "outside click must close both popovers")
       try require(board.unfinishedPopover == nil && board.editor == nil && store.draft == nil,
         "outside click must clean up both popovers")
       try require(store.unfinishedItems.contains { $0.title == "Edited unfinished task" },
@@ -148,9 +167,22 @@ enum PopoverSelfTest {
       guard let reopenedEditor = board.editor, let reopenedEditorContent = reopenedEditor.contentViewController?.view else {
         throw SelfTest.Failure.assertion("could not reopen unfinished editor")
       }
-      try button("Save", in: reopenedEditorContent).performClick(nil)
+      reopenedEditorContent.window?.makeFirstResponder(nil)
+      descendants(reopenedEditorContent).compactMap { $0 as? NSTextField }
+        .first { $0.placeholderString == "Task title" }?.stringValue = "Saved before switching editors"
+      // Programmatic switching must use the same save path as clicking outside.
+      reopenedRow.onOpen?()
       pump()
-      try require(reopened.isShown && board.editor == nil, "saving must leave unfinished tasks open")
+      try require(!reopenedEditor.isShown && reopened.isShown,
+        "switching editors must close the previous editor and keep review open")
+      try require(store.draft?.title == "Saved before switching editors",
+        "reopening a task must load its freshly saved contents")
+      guard let switchedEditor = board.editor else {
+        throw SelfTest.Failure.assertion("missing replacement editor")
+      }
+      switchedEditor.performClose(nil)
+      pump()
+      try require(reopened.isShown && board.editor == nil, "autosaving must leave unfinished tasks open")
       reopenedRow.onOpen?()
       pump()
       guard let cancelledContent = board.editor?.contentViewController?.view else {
@@ -162,7 +194,7 @@ enum PopoverSelfTest {
       try click(in: board.view)
       try require(board.unfinishedPopover == nil, "outside click must also close review alone")
     }
-    print("Unfinished task editing passed in Default and Month views: both stay open, outside click saves and closes both, Save/Cancel preserve review")
+    print("Unfinished task editing passed in Default and Month views: clicking review saves and closes editor, outside click closes both, switching preserves edits, autosave/Cancel preserve review")
   }
 
   private static func click(in view: NSView) throws {
