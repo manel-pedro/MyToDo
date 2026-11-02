@@ -3,6 +3,7 @@ import Foundation
 /// Parses one source line into presentation instructions without changing the source text.
 @MainActor
 enum MarkdownCompiler {
+  private static var compiledLines: [String: Line] = [:]
   private static var expressions: [String: NSRegularExpression] = [:]
   enum Block: Equatable {
     case heading(Int)
@@ -36,6 +37,40 @@ enum MarkdownCompiler {
   }
 
   static func compile(_ source: String) -> Line {
+    if let cached = compiledLines[source] { return cached }
+    let line = parse(source)
+    // Cursor movement revisits the same lines. Bound the cache for long-lived sessions.
+    if compiledLines.count >= 512 { compiledLines.removeAll(keepingCapacity: true) }
+    compiledLines[source] = line
+    return line
+  }
+
+  struct Fence {
+    let marker: Character
+    let length: Int
+
+    @MainActor
+    func closes(_ line: String) -> Bool {
+      guard let parsed = MarkdownCompiler.fenceParts(line) else { return false }
+      return parsed.marker.first == marker && parsed.marker.count >= length
+        && parsed.suffix.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+  }
+
+  static func openingFence(_ line: String) -> Fence? {
+    guard let parsed = fenceParts(line), let marker = parsed.marker.first,
+      marker != "`" || !parsed.suffix.contains("`")
+    else { return nil }
+    return Fence(marker: marker, length: parsed.marker.count)
+  }
+
+  private static func fenceParts(_ line: String) -> (marker: String, suffix: String)? {
+    guard let match = first(#"^ {0,3}(`{3,}|~{3,})(.*)$"#, in: line) else { return nil }
+    let source = line as NSString
+    return (source.substring(with: match.range(at: 1)), source.substring(with: match.range(at: 2)))
+  }
+
+  private static func parse(_ source: String) -> Line {
     let length = (source as NSString).length
     var result = Line()
 
@@ -114,10 +149,13 @@ enum MarkdownCompiler {
       guard content.location != NSNotFound,
         !protected.contains(where: { intersects($0, match.range) })
       else { continue }
-      let destination = destinationGroup.map { (source as NSString).substring(with: match.range(at: $0)) }
-      result.spans.append(Span(
-        sourceRange: match.range, range: content, style: style,
-        destination: destination))
+      let destination = destinationGroup.map {
+        (source as NSString).substring(with: match.range(at: $0))
+      }
+      result.spans.append(
+        Span(
+          sourceRange: match.range, range: content, style: style,
+          destination: destination))
       let opening = NSRange(
         location: match.range.location,
         length: content.location - match.range.location)

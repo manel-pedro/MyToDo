@@ -1,6 +1,6 @@
 import Foundation
 
-struct TodoItem: Codable, Identifiable, Sendable {
+struct TodoItem: Codable, Identifiable, Equatable, Sendable {
   var id: UUID
   var title: String
   var notes: String

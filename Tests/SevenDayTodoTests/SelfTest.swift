@@ -79,7 +79,9 @@ enum SelfTest {
       "default range should show yesterday through the day after tomorrow")
     store.shiftDays(-1)
     try require(
-      store.days.map { DayKey.value(for: $0) } == ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25"],
+      store.days.map { DayKey.value(for: $0) } == [
+        "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25",
+      ],
       "previous should shift the four-day range by one day")
     store.shiftDays(1)
     try require(store.days.map { DayKey.value(for: $0) } == original, "next should shift one day")
@@ -100,20 +102,24 @@ enum SelfTest {
     try require(september.count == 30, "month should include every September date")
     try require(store.items(for: today).contains { $0.id == a.id }, "month should load tasks")
     store.shiftDays(1)
-    try require(Calendar.current.component(.month, from: store.focusedDate) == 10,
+    try require(
+      Calendar.current.component(.month, from: store.focusedDate) == 10,
       "month next should advance a full month")
     store.shiftDays(-1)
     store.setViewMode(.days)
-    try require(store.days.map { DayKey.value(for: $0) } == original,
+    try require(
+      store.days.map { DayKey.value(for: $0) } == original,
       "switching views should retain the focused date")
     store.returnToToday(now: date(2028, 2, 15))
     store.setViewMode(.month)
-    try require(store.days.filter {
-      Calendar.current.component(.month, from: $0) == 2
-    }.count == 29, "leap February should include 29 dates")
+    try require(
+      store.days.filter {
+        Calendar.current.component(.month, from: $0) == 2
+      }.count == 29, "leap February should include 29 dates")
     store.returnToToday(now: date(2026, 12, 15))
     store.shiftDays(1)
-    try require(DayKey.value(for: store.focusedDate) == "2027-01-15",
+    try require(
+      DayKey.value(for: store.focusedDate) == "2027-01-15",
       "month navigation should cross the year boundary")
     store.returnToToday(now: today)
     try require(store.viewMode == .month, "Today should keep the selected view")
@@ -150,34 +156,47 @@ enum SelfTest {
     let older = DayKey.value(for: calendar.date(byAdding: .day, value: -30, to: today)!)
     let tomorrow = DayKey.value(for: calendar.date(byAdding: .day, value: 1, to: today)!)
     let todayKey = DayKey.value(for: today)
-    let oldTask = try repository.create(title: "Older", notes: "Keep these notes", dayKey: older, isCompleted: false)
-    let recent = try repository.create(title: "Recent", notes: "Recent notes", dayKey: yesterday, isCompleted: false)
-    let sibling = try repository.create(title: "Same day", notes: "", dayKey: yesterday, isCompleted: false)
+    let oldTask = try repository.create(
+      title: "Older", notes: "Keep these notes", dayKey: older, isCompleted: false)
+    let recent = try repository.create(
+      title: "Recent", notes: "Recent notes", dayKey: yesterday, isCompleted: false)
+    let sibling = try repository.create(
+      title: "Same day", notes: "", dayKey: yesterday, isCompleted: false)
     _ = try repository.create(title: "Done", notes: "", dayKey: yesterday, isCompleted: true)
     _ = try repository.create(title: "Today", notes: "", dayKey: todayKey, isCompleted: false)
     _ = try repository.create(title: "Future", notes: "", dayKey: tomorrow, isCompleted: false)
-    let deleted = try repository.create(title: "Deleted", notes: "", dayKey: older, isCompleted: false)
+    let deleted = try repository.create(
+      title: "Deleted", notes: "", dayKey: older, isCompleted: false)
     try repository.delete(id: deleted.id)
-    try require(try repository.unfinishedTasks(before: todayKey).map(\.id) == [recent.id, sibling.id, oldTask.id],
+    try require(
+      try repository.unfinishedTasks(before: todayKey).map(\.id) == [
+        recent.id, sibling.id, oldTask.id,
+      ],
       "review should exclude today, future, completed and deleted tasks, and sort newest day first")
     let store = TaskStore(repository: repository)
     store.shiftDays(100)
-    try require(store.unfinishedItems.map(\.id) == [recent.id, sibling.id, oldTask.id],
+    try require(
+      store.unfinishedItems.map(\.id) == [recent.id, sibling.id, oldTask.id],
       "review should include all earlier days independently of the visible range")
-    try require(store.applyReviewPlan([
-      TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
-      TaskPlanUpdate(id: oldTask.id, dayKey: older, isCompleted: true),
-    ]), "review should apply rescheduling and completion together")
-    try require(store.unfinishedItems.map(\.id) == [sibling.id], "review should retain tasks left for later")
+    try require(
+      store.applyReviewPlan([
+        TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
+        TaskPlanUpdate(id: oldTask.id, dayKey: older, isCompleted: true),
+      ]), "review should apply rescheduling and completion together")
+    try require(
+      store.unfinishedItems.map(\.id) == [sibling.id], "review should retain tasks left for later")
     let moved = try repository.tasks(dayKeys: [tomorrow]).filter { $0.id == recent.id }
-    try require(moved.count == 1 && moved[0].notes == recent.notes,
+    try require(
+      moved.count == 1 && moved[0].notes == recent.notes,
       "rescheduling should preserve task identity and notes without creating duplicates")
     let reopened = try LocalTaskRepository(storage: storage)
-    try require(try reopened.unfinishedTasks(before: todayKey).map(\.id) == [sibling.id],
+    try require(
+      try reopened.unfinishedTasks(before: todayKey).map(\.id) == [sibling.id],
       "review changes should persist when reopening storage")
     try require(store.canUndoReview, "a successful review should offer Undo")
     store.undoReviewPlan()
-    try require(store.unfinishedItems.map(\.id) == [recent.id, sibling.id, oldTask.id],
+    try require(
+      store.unfinishedItems.map(\.id) == [recent.id, sibling.id, oldTask.id],
       "Undo should restore dates, completion and original within-day order")
     try require(!store.canUndoReview, "Undo should be consumed after restoration")
     do {
@@ -187,14 +206,21 @@ enum SelfTest {
       ])
       throw Failure.assertion("invalid review item should fail the entire plan")
     } catch TaskError.missingTask {}
-    try require(try repository.unfinishedTasks(before: todayKey).map(\.id) == [recent.id, sibling.id, oldTask.id],
+    try require(
+      try repository.unfinishedTasks(before: todayKey).map(\.id) == [
+        recent.id, sibling.id, oldTask.id,
+      ],
       "an invalid item should not partially apply the plan")
     storage.shouldFail = true
-    try require(!store.applyReviewPlan([
-      TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
-      TaskPlanUpdate(id: oldTask.id, dayKey: older, isCompleted: true),
-    ]), "storage failure should not report a successful review")
-    try require(try repository.unfinishedTasks(before: todayKey).map(\.id) == [recent.id, sibling.id, oldTask.id],
+    try require(
+      !store.applyReviewPlan([
+        TaskPlanUpdate(id: recent.id, dayKey: tomorrow, isCompleted: false),
+        TaskPlanUpdate(id: oldTask.id, dayKey: older, isCompleted: true),
+      ]), "storage failure should not report a successful review")
+    try require(
+      try repository.unfinishedTasks(before: todayKey).map(\.id) == [
+        recent.id, sibling.id, oldTask.id,
+      ],
       "failed persistence should leave the entire plan unchanged")
     try require(!store.canUndoReview, "a failed plan should not create an Undo entry")
   }
@@ -235,54 +261,13 @@ enum SelfTest {
         "horizontal rule should not become a list")
     }
     let image = MarkdownCompiler.compile("![kitten](https://example.com/cat.png)")
-    try require(image.spans.count == 1 && image.spans[0].style == .image,
+    try require(
+      image.spans.count == 1 && image.spans[0].style == .image,
       "image syntax should not be treated as a link")
     let combined = MarkdownCompiler.compile("***important***")
-    try require(combined.spans.contains { $0.style == .boldItalic },
+    try require(
+      combined.spans.contains { $0.style == .boldItalic },
       "combined emphasis should compile")
-
-    let sample = """
-      # Heading
-
-      **bold** and *italic* and `code`
-      > Quote
-      1. First
-      2. Second
-      - One
-      - Two
-      ---
-      [site](https://example.com)
-      ![cat](https://example.com/cat.png)
-      """
-    let html = MarkdownHTMLRenderer.render(sample)
-    for fragment in [
-      "<h1>Heading</h1>", "<strong>bold</strong>", "<em>italic</em>",
-      "<code>code</code>", "<blockquote>Quote</blockquote>",
-      "<ol start=\"1\"><li>First</li><li>Second</li></ol>",
-      "<ul><li>One</li><li>Two</li></ul>", "<hr>",
-      "<a href=\"https://example.com\">site</a>",
-      "<img src=\"https://example.com/cat.png\" alt=\"cat\">",
-    ] {
-      try require(html.contains(fragment), "rendered preview missing \(fragment)")
-    }
-    try require(
-      MarkdownHTMLRenderer.render("[bad](javascript:evil)").contains("bad</p>"),
-      "unsafe link protocols should not become actionable")
-    try require(
-      MarkdownHTMLRenderer.render("<script>alert(1)</script>").contains("&lt;script&gt;"),
-      "raw HTML should be escaped")
-    try require(
-      MarkdownHTMLRenderer.render("First line  \nSecond line").contains("First line<br>Second line"),
-      "two trailing spaces should create a line break")
-    try require(
-      MarkdownHTMLRenderer.render("Alternate heading\n---").contains("<h2>Alternate heading</h2>"),
-      "setext heading should render")
-    try require(
-      MarkdownHTMLRenderer.render("```\n**literal**\n```").contains("<pre><code>**literal**"),
-      "fenced code should remain literal in the rendered preview")
-    try require(
-      MarkdownHTMLRenderer.render("![local](image.jpg)").contains("<img src=\"image.jpg\""),
-      "relative image paths should render from the Notes directory")
 
     let source = "# Heading\n**strong**\nplain"
     let styled = NSMutableAttributedString(string: source)

@@ -5,7 +5,7 @@ import AppKit
 final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
   var onChange: (() -> Void)?
   private weak var textView: NSTextView?
-  private var editingNotes = false
+  private var isFocused: Bool { textView?.window?.firstResponder === textView }
   private var isRendering = false
 
   init(textView: NSTextView) {
@@ -15,25 +15,20 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
   }
 
   func textDidBeginEditing(_ notification: Notification) {
-    editingNotes = true
-    render(activeSelection: textView?.selectedRange())
+    render(activeSelection: isFocused ? textView?.selectedRange() : nil)
   }
 
   func textDidEndEditing(_ notification: Notification) {
-    editingNotes = false
     render(activeSelection: nil)
   }
 
   func textDidChange(_ notification: Notification) {
-    render(activeSelection: editingNotes ? textView?.selectedRange() : nil)
+    render(activeSelection: isFocused ? textView?.selectedRange() : nil)
     onChange?()
   }
 
   func textViewDidChangeSelection(_ notification: Notification) {
-    if let textView, textView.window?.firstResponder === textView {
-      editingNotes = true
-    }
-    render(activeSelection: editingNotes ? textView?.selectedRange() : nil)
+    render(activeSelection: isFocused ? textView?.selectedRange() : nil)
   }
 
   /// Passing `nil` compiles every line. The selected source line stays unformatted.
@@ -61,7 +56,7 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
     if whole.length > 0 { storage.setAttributes(baseAttributes, range: whole) }
 
     var location = 0
-    var insideFence = false
+    var openFence: MarkdownCompiler.Fence?
     while location < source.length {
       var start = 0
       var end = 0
@@ -73,12 +68,14 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
       let paragraphRange = NSRange(location: start, length: end - start)
       let line = source.substring(with: lineRange)
       let active = selectedLines.map { NSIntersectionRange(paragraphRange, $0).length > 0 } ?? false
-      let fence = line.trimmingCharacters(in: .whitespaces).hasPrefix("```")
+      let opening = openFence == nil ? MarkdownCompiler.openingFence(line) : nil
+      let closing = openFence?.closes(line) ?? false
+      let fenceMarker = opening != nil || closing
 
       if !active && lineRange.length > 0 {
-        if fence {
+        if fenceMarker {
           conceal(lineRange, in: storage)
-        } else if insideFence {
+        } else if openFence != nil {
           storage.addAttributes(
             [
               .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
@@ -88,7 +85,7 @@ final class MarkdownLivePreview: NSObject, NSTextViewDelegate {
           apply(MarkdownCompiler.compile(line), at: start, lineRange: lineRange, in: storage)
         }
       }
-      if fence { insideFence.toggle() }
+      if closing { openFence = nil } else if let opening { openFence = opening }
       location = end
     }
   }

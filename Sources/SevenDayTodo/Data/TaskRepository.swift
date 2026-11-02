@@ -1,12 +1,5 @@
 import Foundation
 
-struct TaskPlanUpdate {
-  var id: UUID
-  var dayKey: String
-  var isCompleted: Bool
-  var destinationIndex: Int? = nil
-}
-
 @MainActor
 protocol TaskRepository {
   func tasks(dayKeys: [String]) throws -> [TodoItem]
@@ -16,7 +9,12 @@ protocol TaskRepository {
   func update(id: UUID, title: String, notes: String, dayKey: String, isCompleted: Bool) throws
   func updateNotes(id: UUID, notes: String) throws
   func toggle(id: UUID) throws
-  func move(id: UUID, to dayKey: String) throws
   func move(id: UUID, to dayKey: String, at destinationIndex: Int) throws
   func delete(id: UUID) throws
+}
+
+extension TaskRepository {
+  func move(id: UUID, to dayKey: String) throws {
+    try move(id: id, to: dayKey, at: Int.max)
+  }
 }
