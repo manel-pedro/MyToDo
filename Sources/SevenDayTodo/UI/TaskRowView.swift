@@ -9,6 +9,7 @@ final class TaskRowView: NSView, NSDraggingSource {
   var onDragBegan: ((TaskRowView) -> Void)?
   var onDragEnded: (() -> Void)?
   var taskID: UUID { item.id }
+  var isCompleted: Bool { item.isCompleted }
   private let item: TodoItem
   private let grip = NSImageView()
   private let label = NSTextField(labelWithString: "")

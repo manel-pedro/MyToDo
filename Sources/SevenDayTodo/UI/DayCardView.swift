@@ -17,7 +17,7 @@ final class DayCardView: NSView {
   private let dropHint = NSTextField(labelWithString: "")
 
   init(date: Date, items: [TodoItem], compact: Bool = false, actions: TaskActions) {
-    self.list = StackScrollView(spacing: compact ? 2 : 7)
+    self.list = StackScrollView(spacing: compact ? 2 : 7, fillsAvailableHeight: true)
     self.actions = actions
     self.compact = compact
     self.date = date
@@ -47,18 +47,32 @@ final class DayCardView: NSView {
     dayNumber.font = .systemFont(ofSize: compact ? 12 : 20, weight: .bold)
     if Calendar.current.isDateInToday(date) { dayNumber.textColor = .controlAccentColor }
 
-    if items.isEmpty && !compact {
-      let empty = NSTextField(labelWithString: "Nothing planned")
-      empty.textColor = .tertiaryLabelColor
-      empty.font = .systemFont(ofSize: 11)
+    rows.distribution = .fill
+    let active = items.filter { !$0.isCompleted }
+    let completed = items.filter(\.isCompleted)
+    if active.isEmpty && !compact {
+      let empty = AppUI.label("Nothing planned", size: 11, color: .tertiaryLabelColor)
       rows.addArrangedSubview(empty)
-    } else {
-      for item in items {
-        let row = TaskRowView(item: item, compact: compact)
-        actions.configure(row, for: item)
-        rows.addArrangedSubview(row)
-        row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
-      }
+      empty.heightAnchor.constraint(equalToConstant: 16).isActive = true
+    }
+    for item in active { addTaskRow(item) }
+
+    // Flexible space anchors completed items to the bottom of short day lists.
+    let spacer = NSView()
+    spacer.setContentHuggingPriority(.init(1), for: .vertical)
+    rows.addArrangedSubview(spacer)
+    spacer.heightAnchor.constraint(greaterThanOrEqualToConstant: 0).isActive = true
+
+    if !completed.isEmpty {
+      let divider = AppUI.separator()
+      rows.addArrangedSubview(divider)
+      divider.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+      divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+      let heading = AppUI.label("Completed (\(completed.count))", size: 11,
+                                weight: .semibold, color: .secondaryLabelColor)
+      rows.addArrangedSubview(heading)
+      heading.heightAnchor.constraint(equalToConstant: 16).isActive = true
+      for item in completed { addTaskRow(item) }
     }
 
     let scroll = list
@@ -100,6 +114,14 @@ final class DayCardView: NSView {
       dropHint.bottomAnchor.constraint(equalTo: bottomAnchor, constant: compact ? -5 : -50),
       dropHint.heightAnchor.constraint(equalToConstant: 22),
     ])
+  }
+
+  private func addTaskRow(_ item: TodoItem) {
+    let row = TaskRowView(item: item, compact: compact)
+    actions.configure(row, for: item)
+    rows.addArrangedSubview(row)
+    row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+    row.heightAnchor.constraint(equalToConstant: compact ? 22 : 31).isActive = true
   }
 
   @objc private func addTask(_ sender: NSButton) { onAdd?(sender) }
@@ -147,7 +169,7 @@ final class DayCardView: NSView {
   }
 
   private func updateDropFeedback(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    guard sender.draggingSource is TaskRowView, let id = draggedID(sender) else {
+    guard let source = sender.draggingSource as? TaskRowView, let id = draggedID(sender) else {
       setDropHighlighted(false)
       return []
     }
@@ -157,7 +179,7 @@ final class DayCardView: NSView {
       ? "Drop here"
       : "Move to \(date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))"
     let point = convert(sender.draggingLocation, from: nil)
-    let placement = dropPlacement(for: id, at: point)
+    let placement = dropPlacement(for: id, at: point, completed: source.isCompleted)
     let visibleList = convert(taskScroll.contentView.bounds, from: taskScroll.contentView)
     let y = min(max(placement.y, visibleList.minY + 4), visibleList.maxY - 4)
     let inset: CGFloat = compact ? 6 : 12
@@ -167,25 +189,30 @@ final class DayCardView: NSView {
     return .move
   }
 
-  // Use the same placement for the visual marker and the persisted order.
-  private func dropPlacement(for id: UUID, at point: NSPoint) -> (index: Int, y: CGFloat) {
-    let targets = rows.arrangedSubviews.compactMap { $0 as? TaskRowView }.filter { $0.taskID != id }
-    for (index, row) in targets.enumerated() {
+  // Map the visible section order back to storage's order without changing completion.
+  private func dropPlacement(for id: UUID, at point: NSPoint, completed: Bool) -> (index: Int, y: CGFloat) {
+    let remaining = items.filter { $0.id != id }
+    let targets = rows.arrangedSubviews.compactMap { $0 as? TaskRowView }
+      .filter { $0.taskID != id && $0.isCompleted == completed }
+    for row in targets {
       let frame = convert(row.bounds, from: row)
-      if point.y > frame.midY { return (index, frame.maxY + rows.spacing / 2) }
+      if point.y > frame.midY, let index = remaining.firstIndex(where: { $0.id == row.taskID }) {
+        return (index, frame.maxY + rows.spacing / 2)
+      }
     }
-    if let last = targets.last {
-      return (targets.count, convert(last.bounds, from: last).minY - rows.spacing / 2)
+    if let last = targets.last,
+      let index = remaining.firstIndex(where: { $0.id == last.taskID }) {
+      return (index + 1, convert(last.bounds, from: last).minY - rows.spacing / 2)
     }
     let visibleList = convert(taskScroll.contentView.bounds, from: taskScroll.contentView)
-    return (0, visibleList.maxY - 12)
+    return (remaining.count, completed ? visibleList.minY + 12 : visibleList.maxY - 12)
   }
 
   override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
     setDropHighlighted(false)
-    guard sender.draggingSource is TaskRowView, let id = draggedID(sender) else { return false }
+    guard let source = sender.draggingSource as? TaskRowView, let id = draggedID(sender) else { return false }
     let point = convert(sender.draggingLocation, from: nil)
-    return onDrop?(id, dropPlacement(for: id, at: point).index) ?? false
+    return onDrop?(id, dropPlacement(for: id, at: point, completed: source.isCompleted).index) ?? false
   }
 
   private func draggedID(_ sender: any NSDraggingInfo) -> UUID? {

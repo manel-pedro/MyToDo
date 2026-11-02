@@ -91,7 +91,7 @@ extension NSStackView {
 final class StackScrollView: NSScrollView {
   let stack: NSStackView
 
-  init(spacing: CGFloat = 8) {
+  init(spacing: CGFloat = 8, fillsAvailableHeight: Bool = false) {
     stack = AppUI.stack(spacing: spacing)
     super.init(frame: .zero)
     drawsBackground = false
@@ -102,6 +102,9 @@ final class StackScrollView: NSScrollView {
     documentView = document
     AppUI.pin(stack, in: document)
     document.widthAnchor.constraint(equalTo: contentView.widthAnchor).isActive = true
+    if fillsAvailableHeight {
+      document.heightAnchor.constraint(greaterThanOrEqualTo: contentView.heightAnchor).isActive = true
+    }
   }
 
   @available(*, unavailable)
