@@ -46,7 +46,7 @@ final class TaskRowView: NSView, NSDraggingSource {
     label.setContentHuggingPriority(.init(249), for: .horizontal)
     delete.setContentHuggingPriority(.required, for: .horizontal)
     let stack = AppUI.stack(
-      compact ? [grip, checkbox, label] : [grip, checkbox, label, delete],
+      compact ? [grip, checkbox, label] : [delete, grip, checkbox, label],
       axis: .horizontal, spacing: 4, alignment: .centerY)
     AppUI.pin(stack, in: self, horizontal: 3, vertical: 2)
     heightAnchor.constraint(greaterThanOrEqualToConstant: compact ? 22 : 31).isActive = true

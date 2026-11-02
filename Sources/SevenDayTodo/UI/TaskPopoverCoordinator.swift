@@ -12,6 +12,8 @@ final class TaskPopoverCoordinator {
   private var editorFromReview = false
   private var dragSource: TaskRowView?
   private var clickMonitor: Any?
+  private var handlingReviewClick = false
+  private var needsReviewRefresh = false
   private var resignObserver: NSObjectProtocol?
   var isMonitoringOutsideClicks: Bool { clickMonitor != nil || resignObserver != nil }
 
@@ -32,7 +34,12 @@ final class TaskPopoverCoordinator {
       })
   }
 
-  func refreshReview() { review?.refresh() }
+  func refreshReview() {
+    // Saving on mouse-down must not remove the row that will receive mouse-up.
+    guard !handlingReviewClick else { needsReviewRefresh = true; return }
+    needsReviewRefresh = false
+    review?.refresh()
+  }
 
   func toggleReview(near anchor: NSView) {
     if review != nil {
@@ -126,14 +133,29 @@ final class TaskPopoverCoordinator {
 
   private func startMonitoring() {
     guard !isMonitoringOutsideClicks else { return }
-    let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    let clicks: NSEvent.EventTypeMask = [
+      .leftMouseDown, .rightMouseDown, .otherMouseDown,
+      .leftMouseUp, .rightMouseUp, .otherMouseUp,
+    ]
     clickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
       guard let self else { return event }
+      if [.leftMouseUp, .rightMouseUp, .otherMouseUp].contains(event.type) {
+        self.handlingReviewClick = false
+        if self.needsReviewRefresh {
+          DispatchQueue.main.async { [weak self] in self?.refreshReview() }
+        }
+        return event
+      }
       var window = event.window
       while let candidate = window {
         if candidate === self.editor?.contentViewController?.view.window { return event }
         if candidate === self.review?.contentViewController?.view.window {
-          return self.editor?.requestClose() != false ? event : nil
+          self.handlingReviewClick = self.editor != nil
+          if self.editor?.requestClose() == false {
+            self.handlingReviewClick = false
+            return nil
+          }
+          return event
         }
         window = candidate.parent
       }
@@ -163,5 +185,7 @@ final class TaskPopoverCoordinator {
     if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
     clickMonitor = nil
     resignObserver = nil
+    handlingReviewClick = false
+    needsReviewRefresh = false
   }
 }

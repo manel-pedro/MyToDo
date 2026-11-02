@@ -22,6 +22,7 @@ enum PopoverSelfTest {
     window.makeKeyAndOrderFront(nil)
     defer { window.close() }
     pump()
+    try checkClickingBetweenTasks(board: board, store: store)
 
     for iteration in 0..<24 {
       try autoreleasepool {
@@ -118,6 +119,8 @@ enum PopoverSelfTest {
 
       }
     }
+    try checkEditorCancellation(board: board, store: store)
+    try checkTaskRowControls(in: board.view)
     try checkUnfinishedEditing(board: board, store: store)
     try checkFailedEditorSwitch()
     try checkLayouts(board: board, store: store, window: window)
@@ -317,6 +320,141 @@ enum PopoverSelfTest {
       }
     }
     print("Default/Month layout checks passed at minimum and normal window sizes")
+  }
+
+  private static func checkEditorCancellation(board: BoardViewController, store: TaskStore) throws {
+    for mode in [TaskStore.ViewMode.days, .month] {
+      store.setViewMode(mode)
+      board.view.layoutSubtreeIfNeeded()
+      guard let add = descendants(board.view).compactMap({ $0 as? NSButton })
+        .first(where: { $0.title == "+ Add" || $0.title == "+" }) else {
+        throw SelfTest.Failure.assertion("missing add button for cancellation check")
+      }
+      let before = store.items.map(\.id)
+      add.performClick(nil)
+      pump()
+      guard let emptyEditor = board.editor else {
+        throw SelfTest.Failure.assertion("missing blank editor")
+      }
+      emptyEditor.performClose(nil)
+      pump()
+      try require(board.editor == nil && store.draft == nil && store.items.map(\.id) == before,
+        "dismissing a blank new task must not create a task")
+      add.performClick(nil)
+      pump()
+      guard let editor = board.editor, let content = editor.contentViewController?.view,
+        let title = descendants(content).compactMap({ $0 as? NSTextField })
+          .first(where: { $0.placeholderString == "Task title" }) else {
+        throw SelfTest.Failure.assertion("missing editor title for cancellation check")
+      }
+      title.stringValue = "Discard this new task"
+      try button("Cancel", in: content).performClick(nil)
+      pump()
+      try require(board.editor == nil && store.draft == nil && store.items.map(\.id) == before,
+        "Cancel must discard a filled new task")
+    }
+    print("Blank-task dismissal and filled-task cancellation passed in both views")
+  }
+
+  private static func checkTaskRowControls(in view: NSView) throws {
+    let row = TaskRowView(item: TodoItem(title: "Row control regression", dayKey: DayKey.value(for: .now)))
+    row.frame = NSRect(x: 0, y: 0, width: 380, height: 32)
+    view.addSubview(row)
+    defer { row.removeFromSuperview() }
+    row.layoutSubtreeIfNeeded()
+    let buttons = descendants(row).compactMap { $0 as? NSButton }
+    guard let trash = buttons.first(where: { $0.image != nil }),
+      let checkbox = buttons.first(where: { $0 !== trash }),
+      let title = descendants(row).compactMap({ $0 as? NSTextField }).first else {
+      throw SelfTest.Failure.assertion("task row is missing its controls")
+    }
+    let trashFrame = row.convert(trash.alignmentRect(forFrame: trash.bounds), from: trash)
+    let checkboxFrame = row.convert(checkbox.alignmentRect(forFrame: checkbox.bounds), from: checkbox)
+    let titleFrame = row.convert(title.alignmentRect(forFrame: title.bounds), from: title)
+    // Compare native alignment rects; control insets vary with the macOS theme.
+    try require(trashFrame.maxX <= checkboxFrame.minX
+      && checkboxFrame.maxX <= titleFrame.minX, "trash must be at the far left before checkbox and title: \(trashFrame), \(checkboxFrame), \(titleFrame)")
+    var deletions = 0
+    var toggles = 0
+    var opens = 0
+    row.onDelete = { deletions += 1 }
+    row.onToggle = { toggles += 1 }
+    row.onOpen = { opens += 1 }
+    checkbox.performClick(nil)
+    try require(toggles == 1 && deletions == 0 && opens == 0,
+      "checkbox must toggle without deleting or opening the editor")
+    trash.performClick(nil)
+    try require(toggles == 1 && deletions == 1 && opens == 0,
+      "trash must delete exactly once without toggling or opening the editor")
+    print("Task row controls passed: leftmost trash, independent delete and completion actions")
+  }
+
+  private static func checkClickingBetweenTasks(board: BoardViewController, store: TaskStore) throws {
+    let oldDate = Calendar.current.date(byAdding: .day, value: -60, to: .now)!
+    for title in ["Click target A", "Click target B"] {
+      store.beginNewTask(on: oldDate)
+      store.setDraft(title: title, notes: "", date: oldDate, isCompleted: false)
+      try require(store.saveDraft(), "could not seed click-switching task")
+    }
+    for mode in [TaskStore.ViewMode.days, .month] {
+      store.setViewMode(mode)
+      board.view.layoutSubtreeIfNeeded()
+      guard let reviewButton = descendants(board.view).compactMap({ $0 as? NSButton })
+        .first(where: { $0.title.hasPrefix("Unfinished tasks") }) else {
+        throw SelfTest.Failure.assertion("missing review button for click switching")
+      }
+      reviewButton.performClick(nil)
+      pump()
+      guard let review = board.unfinishedPopover, let content = review.contentViewController?.view else {
+        throw SelfTest.Failure.assertion("missing review for click switching")
+      }
+      func row(named title: String) throws -> TaskRowView {
+        guard let row = descendants(content).compactMap({ $0 as? TaskRowView }).first(where: {
+          descendants($0).compactMap { $0 as? NSTextField }.contains { $0.stringValue == title }
+        }) else { throw SelfTest.Failure.assertion("missing task row: \(title)") }
+        return row
+      }
+      let titleA = store.unfinishedItems.first { $0.notes == "Click-switch saved" }?.title ?? "Click target A"
+      try clickRow(try row(named: titleA))
+      guard let firstEditor = board.editor, let editorContent = firstEditor.contentViewController?.view,
+        let title = descendants(editorContent).compactMap({ $0 as? NSTextField })
+          .first(where: { $0.placeholderString == "Task title" }),
+        let notes = descendants(editorContent).compactMap({ $0 as? NSTextView }).first(where: { !$0.isFieldEditor }) else {
+        throw SelfTest.Failure.assertion("a real row click must open an old unfinished task")
+      }
+      title.stringValue = "Click target A edited"
+      notes.string = "Click-switch saved"
+      try clickRow(try row(named: "Click target B"))
+      try require(!firstEditor.isShown && review.isShown && board.editor?.isShown == true,
+        "one click on another task must replace the editor and preserve review: old=\(firstEditor.isShown), review=\(review.isShown), new=\(board.editor?.isShown == true), selected=\(store.selectedTask?.title ?? "none")")
+      try require(store.selectedTask?.title == "Click target B", "click must open the intended second task")
+      try require(store.unfinishedItems.contains { $0.title == "Click target A edited" && $0.notes == "Click-switch saved" },
+        "switching tasks by mouse must save the first edit")
+      try click(in: board.view)
+      try require(board.editor == nil && board.unfinishedPopover == nil, "click-switch check must close cleanly")
+    }
+    print("Real mouse task switching passed in both views, including tasks outside the visible calendar")
+  }
+
+  private static func clickRow(_ row: TaskRowView) throws {
+    row.scrollToVisible(row.bounds)
+    pump()
+    guard let window = row.window,
+      let label = descendants(row).compactMap({ $0 as? NSTextField }).first else {
+      throw SelfTest.Failure.assertion("task row is detached or missing its title")
+    }
+    let location = label.convert(NSPoint(x: label.bounds.midX, y: label.bounds.midY), to: nil)
+    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+      guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else {
+        throw SelfTest.Failure.assertion("could not create row click")
+      }
+      NSApp.sendEvent(event)
+      // A real mouse release is a separate event-loop turn, after pending layout.
+      window.contentView?.layoutSubtreeIfNeeded()
+      pump()
+    }
   }
 
   private static func click(in view: NSView) throws {
